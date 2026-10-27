@@ -79,7 +79,8 @@ then
 fi
 
 # Each app runs as its own user app-<name> with its own PM2 daemon; platform-sync
-# creates them. App users may not reach the metadata server: platform-sync writes
+# creates them. Every user with uid 1000 or above (apps, deploy accounts, people)
+# is blocked from the metadata server, except DNS on port 53: platform-sync writes
 # /etc/nftables.d/platform.nft, which nftables.service loads on every boot before
 # the apps start.
 install -d /etc/nftables.d

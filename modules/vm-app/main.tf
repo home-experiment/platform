@@ -28,7 +28,7 @@ resource "google_secret_manager_secret_iam_member" "vm_env" {
   member    = "serviceAccount:${var.platform.vm_service_account_email}"
 }
 
-# Deploy: upload releases under <name>/ only.
+# Deploy: upload releases under <name>/ only; listing is limited to the same prefix.
 resource "google_storage_bucket_iam_member" "deploy_releases" {
   bucket = var.platform.releases_bucket
   role   = "roles/storage.objectAdmin"
@@ -36,7 +36,7 @@ resource "google_storage_bucket_iam_member" "deploy_releases" {
 
   condition {
     title      = "${var.name}-releases-only"
-    expression = "resource.name.startsWith(\"projects/_/buckets/${var.platform.releases_bucket}/objects/${var.name}/\")"
+    expression = "resource.name.startsWith(\"projects/_/buckets/${var.platform.releases_bucket}/objects/${var.name}/\") || api.getAttribute(\"storage.googleapis.com/objectListPrefix\", \"\").startsWith(\"${var.name}/\")"
   }
 }
 

@@ -90,7 +90,7 @@ App names are 2 to 23 characters: lowercase letters, digits and dashes, starting
    ```
 
    Put the same values in the config file of step 3 and add a new secret version. The values reach the app's config file on the VM only with the next deploy. Never create `/root/.my.cnf`. The platform scripts run as root and log in to MariaDB over the socket, and a login file written for one app breaks database creation and backups for the others.
-6. Point DNS at the static IP: `terraform -chdir=live output -raw static_ip`. Caddy can only get a certificate once the host name resolves to it.
+6. Point DNS at the static IP: `terraform -chdir=live output -raw static_ip`. Caddy can only get a certificate once the host name resolves to it. After you change `domains` (or `extra_domains`) and apply, Caddy picks the change up only after `sudo platform-sync` on the VM or the next deploy.
 7. Set these GitHub repository variables on the app's repository. The repository must belong to `home-experiment`; the WIF provider rejects any other owner.
 
    | Variable | Value |
@@ -139,7 +139,7 @@ Backups are written to `gs://pytsekas-film-picker-backups/<name>/<name>-YYYY-MM-
 
 - Each app runs as its own Linux user `app-<name>` with its own PM2 daemon, started at boot by `pm2-app-<name>.service`. `sudo -u app-<name> pm2 ...` talks to that daemon.
 - `/srv/<name>` belongs to that user and is mode 750. Operators read app files with `sudo -u app-<name>`.
-- App users cannot reach the GCP metadata server, which hands out the VM service account's credentials. `platform-sync` writes an nftables table to `/etc/nftables.d/platform.nft`, and `nftables.service` loads it at boot. Only DNS on that address stays open. Users of removed apps stay blocked.
+- No user with uid 1000 or above (apps, deploy accounts, people) can reach the GCP metadata server, which hands out the VM service account's credentials. Only DNS (port 53) stays open. `platform-sync` writes the nftables table to `/etc/nftables.d/platform.nft`, and `nftables.service` loads it at boot. Users of removed apps stay blocked.
 - Only root calls `gcloud`. `platform-deploy` downloads the release and the app's config secret into `/run/platform/<name>` (not readable by other apps) and hands them to the app user, then removes them.
 - An app that needs GCP APIs from the VM is not supported yet.
 
