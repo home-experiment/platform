@@ -107,6 +107,24 @@ test_invalid_apps_skipped(){
   done
 }
 
+test_name_length(){
+  metadata \
+    "vm-app-abcdefghijklmnopqrstuvw=$(app_value abcdefghijklmnopqrstuvw 4100)" \
+    "vm-app-abcdefghijklmnopqrstuvwx=$(app_value abcdefghijklmnopqrstuvwx 4101)"
+  assert_eq "$(names)" "abcdefghijklmnopqrstuvw" "23 characters accepted, 24 rejected"
+  grep -q "vm-app-abcdefghijklmnopqrstuvwx: bad name" "$WORK/err.log" || fail "no warning for a 24-character name"
+}
+
+test_app_user(){
+  local got
+  got="$(
+    # shellcheck source=../platform-common.sh
+    . "$SCRIPTS/platform-common.sh"
+    app_user demo
+  )"
+  assert_eq "$got" "app-demo" "app user"
+}
+
 test_domain_with_newline_skipped(){
   metadata \
     "vm-app-good=$(app_value good 4100)" \

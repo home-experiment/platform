@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Tests for scripts/platform-sync.sh. chown, mariadb, caddy, systemctl and
-# visudo are stubs on PATH; every test gets fresh directories in a temp dir.
+# Tests for scripts/platform-sync.sh. chown, mariadb, caddy, systemctl, visudo,
+# id, useradd, runuser, pm2 and nft are stubs on PATH; useradd appends to a
+# fake passwd file that id reads. Every test gets fresh directories in a temp dir.
 #
 #   bash scripts/tests/platform-sync.test.sh
 set -euo pipefail
@@ -46,10 +47,26 @@ setup(){
   WORK="$(cd "$WORK" && pwd -P)"
   export PLATFORM_METADATA_FILE="$WORK/metadata.json" MYSQL_DEFAULTS="$WORK/no-login-file"
   export SRV_DIR="$WORK/srv" CADDY_SITES="$WORK/caddy/sites" CADDYFILE="$WORK/caddy/Caddyfile"
-  export BIN_DIR="$WORK/usr-bin" SUDOERS_DIR="$WORK/sudoers" APP_USER=app
+  export BIN_DIR="$WORK/usr-bin" SUDOERS_DIR="$WORK/sudoers" HOME_BASE="$WORK/home"
+  export SYSTEMD_DIR="$WORK/systemd" NFT_FILE="$WORK/nftables.d/platform.nft" PASSWD="$WORK/passwd"
   export STUB_LOG="$WORK/calls.log" MARIADB_EXIT=0 CADDY_EXIT=0 VISUDO_BAD=""
-  mkdir -p "$WORK/bin" "$BIN_DIR" "$SUDOERS_DIR" "$WORK/caddy"
-  touch "$STUB_LOG"
+  export USERADD_BAD="" PM2_EXIT=0 NFT_EXIT=0 NFT_LIST_EXIT=0
+  mkdir -p "$WORK/bin" "$BIN_DIR" "$SUDOERS_DIR" "$WORK/caddy" "$SYSTEMD_DIR"
+  touch "$STUB_LOG" "$PASSWD"
+  # id -u <user>: the uid from the fake passwd file (name:uid lines); fails for unknown users.
+  stub id 'if [ "${1:-}" = -u ] && [ -n "${2:-}" ]; then
+  uid="$(awk -F: -v u="$2" '"'"'$1 == u { print $2 }'"'"' "$PASSWD")"
+  [ -n "$uid" ] || exit 1
+  echo "$uid"
+  exit 0
+fi
+echo 0'
+  # useradd ... <user>: appends <user>:<1001 + existing lines>, or fails for names in USERADD_BAD.
+  stub useradd 'for user in "$@"; do :; done
+case " $USERADD_BAD " in *" $user "*) exit 1 ;; esac
+echo "$user:$((1001 + $(wc -l < "$PASSWD")))" >> "$PASSWD"'
+  stub pm2 'exit "$PM2_EXIT"'
+  stub nft 'case "${1:-}" in list) exit "$NFT_LIST_EXIT" ;; -f) exit "$NFT_EXIT" ;; esac'
   stub chown 'exit 0'
   stub mariadb 'exit "$MARIADB_EXIT"'
   stub caddy 'exit "$CADDY_EXIT"'
@@ -66,14 +83,34 @@ teardown(){
 
 run_sync(){ bash "$SCRIPTS/platform-sync.sh" > "$WORK/out.log" 2>&1; }
 
+# nft_expected [rule line]: the nft file platform-sync writes, with that line in the chain.
+nft_expected(){
+  printf '%s\n' \
+    "# Written by platform-sync: app users may not reach the metadata server, which" \
+    "# hands out the VM service account's credentials." \
+    "table inet platform" \
+    "delete table inet platform" \
+    "table inet platform {" \
+    "	chain output {" \
+    "		type filter hook output priority 0; policy accept;"
+  if [ -n "${1:-}" ]; then printf '\t\t%s\n' "$1"; fi
+  printf '%s\n' "	}" "}"
+}
+
 test_sync_app(){
   metadata "vm-app-demo=$(app_value demo 4100)"
   run_sync || fail "sync exited non-zero: $(cat "$WORK/out.log")"
   [ -d "$SRV_DIR/demo/releases" ] || fail "releases directory missing"
   [ -d "$SRV_DIR/demo/shared/logs" ] || fail "logs directory missing"
-  assert_eq "$(grep '^chown' "$STUB_LOG")" "chown -h app:app $SRV_DIR/demo" "chown calls"
-  grep -q "^runuser -u app -- mkdir -p $SRV_DIR/demo/releases $SRV_DIR/demo/shared/logs" "$STUB_LOG" \
+  assert_eq "$(grep '^useradd' "$STUB_LOG")" \
+    "useradd --create-home --home-dir $HOME_BASE/app-demo --shell /bin/bash --user-group app-demo" "useradd call"
+  assert_eq "$(grep '^chown' "$STUB_LOG")" "chown -h app-demo:app-demo $SRV_DIR/demo" "chown calls"
+  assert_eq "$(file_mode "$SRV_DIR/demo")" "750" "app directory mode"
+  grep -q "^runuser -u app-demo -- mkdir -p $SRV_DIR/demo/releases $SRV_DIR/demo/shared/logs" "$STUB_LOG" \
     || fail "subdirectories not created as the app user"
+  assert_eq "$(grep '^pm2' "$STUB_LOG")" "pm2 startup systemd -u app-demo --hp $HOME_BASE/app-demo" "pm2 startup"
+  assert_eq "$(cat "$NFT_FILE")" "$(nft_expected "ip daddr 169.254.169.254 meta skuid { 1001 } reject")" "nft file"
+  grep -q "^nft -f $NFT_FILE" "$STUB_LOG" || fail "nft rules not loaded"
   grep -q 'mariadb -e CREATE DATABASE IF NOT EXISTS `demo` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci' "$STUB_LOG" \
     || fail "database not created"
   assert_eq "$(cat "$CADDY_SITES/demo.caddy")" "$(cat <<'EOF'
@@ -110,9 +147,70 @@ test_no_db(){
 test_second_run_no_reload(){
   metadata "vm-app-demo=$(app_value demo 4100)"
   run_sync || fail "first sync failed: $(cat "$WORK/out.log")"
+  touch "$SYSTEMD_DIR/pm2-app-demo.service"
   : > "$STUB_LOG"
   run_sync || fail "second sync failed: $(cat "$WORK/out.log")"
   if grep -q "reload-or-restart caddy" "$STUB_LOG"; then fail "Caddy reloaded although nothing changed"; fi
+  if grep -q "^useradd" "$STUB_LOG"; then fail "useradd called for an existing user"; fi
+  if grep -q "^pm2 startup" "$STUB_LOG"; then fail "pm2 startup called although the unit exists"; fi
+  if grep -q "^nft -f" "$STUB_LOG"; then fail "nft rules reloaded although nothing changed"; fi
+}
+
+test_nft_reloaded_when_table_missing(){
+  metadata "vm-app-demo=$(app_value demo 4100)"
+  run_sync || fail "first sync failed: $(cat "$WORK/out.log")"
+  export NFT_LIST_EXIT=1
+  : > "$STUB_LOG"
+  run_sync || fail "second sync failed: $(cat "$WORK/out.log")"
+  grep -q "^nft -f $NFT_FILE" "$STUB_LOG" || fail "nft rules not loaded although the table is missing"
+}
+
+test_two_apps_uids_sorted(){
+  echo "app-other:999" > "$PASSWD"
+  metadata "vm-app-demo=$(app_value demo 4100)" "vm-app-other=$(app_value other 4200)"
+  run_sync || fail "sync exited non-zero: $(cat "$WORK/out.log")"
+  assert_eq "$(grep '^useradd' "$STUB_LOG" | wc -l | tr -d ' ')" "1" "useradd only for the new user"
+  assert_eq "$(cat "$NFT_FILE")" "$(nft_expected "ip daddr 169.254.169.254 meta skuid { 999, 1002 } reject")" "nft file"
+}
+
+test_useradd_failure_skips_app(){
+  export USERADD_BAD=app-demo
+  metadata "vm-app-demo=$(app_value demo 4100)" "vm-app-other=$(app_value other 4200)"
+  if run_sync; then fail "sync must fail when a user cannot be created"; fi
+  grep -q "warning: demo: " "$WORK/out.log" || fail "no warning for the failed user: $(cat "$WORK/out.log")"
+  [ ! -e "$SRV_DIR/demo" ] || fail "directories made for an app without a user"
+  [ ! -e "$CADDY_SITES/demo.caddy" ] || fail "Caddy site written for an app without a user"
+  [ -f "$CADDY_SITES/other.caddy" ] || fail "other app not synced"
+  [ -d "$SRV_DIR/other/releases" ] || fail "other app's directories missing"
+  assert_eq "$(cat "$NFT_FILE")" "$(nft_expected "ip daddr 169.254.169.254 meta skuid { 1001 } reject")" "nft file"
+}
+
+test_no_app_users_keeps_empty_chain(){
+  metadata
+  run_sync || fail "sync exited non-zero: $(cat "$WORK/out.log")"
+  assert_eq "$(cat "$NFT_FILE")" "$(nft_expected)" "nft file without users"
+}
+
+test_removed_app_user_stays_blocked(){
+  metadata "vm-app-demo=$(app_value demo 4100)" "vm-app-other=$(app_value other 4200)"
+  run_sync || fail "first sync failed: $(cat "$WORK/out.log")"
+  metadata "vm-app-other=$(app_value other 4200)"
+  run_sync || fail "second sync failed: $(cat "$WORK/out.log")"
+  assert_eq "$(cat "$NFT_FILE")" "$(nft_expected "ip daddr 169.254.169.254 meta skuid { 1001, 1002 } reject")" "nft file"
+}
+
+test_nft_failure_reported(){
+  export NFT_EXIT=1
+  metadata "vm-app-demo=$(app_value demo 4100)"
+  if run_sync; then fail "sync must fail when nft cannot load the rules"; fi
+  grep -q "warning: .*$NFT_FILE" "$WORK/out.log" || fail "nft failure not reported: $(cat "$WORK/out.log")"
+}
+
+test_pm2_startup_failure_reported(){
+  export PM2_EXIT=1
+  metadata "vm-app-demo=$(app_value demo 4100)"
+  if run_sync; then fail "sync must fail when pm2 startup fails"; fi
+  grep -q "warning: demo: " "$WORK/out.log" || fail "pm2 startup failure not reported"
 }
 
 test_invalid_app_keeps_files_and_others_sync(){

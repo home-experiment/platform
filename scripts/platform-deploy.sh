@@ -8,17 +8,26 @@
 #   platform-deploy.sh --app NAME status     show the current release and the PM2 process list
 #   platform-deploy.sh --help                this text
 #
-# As root it checks the arguments, runs platform-sync.sh, then runs itself again
-# as APP_USER for the rest. activate unpacks the release into
-# /srv/NAME/releases/<release>, writes the secret NAME-env to
-# /srv/NAME/shared/app.env, makes the links in the release's .platform/links,
-# runs .platform/pre-start, switches current, restarts the release's
-# ecosystem.config.cjs in PM2 and checks http://127.0.0.1:<port><health_path>
-# from the app's metadata; when that fails it rolls back to the previous release.
+# It runs in two phases. The root phase checks the arguments, the URL and the
+# app's metadata, runs platform-sync.sh from /, and for activate stages the
+# release: it downloads the tarball to STAGING_DIR/NAME/release.tar.gz and the
+# secret NAME-env to STAGING_DIR/NAME/app.env (directory 750, files 640, group
+# app-NAME, so no other app can read them). gcloud runs only here, as root. It
+# then runs the app phase as the app's own Linux user app-NAME (HOME
+# HOME_BASE/app-NAME) and removes the staging directory when that ends, whether
+# it succeeded or not. The app phase never calls gcloud and cannot reach the
+# metadata server; it gets the app's metadata from the root phase. activate
+# unpacks the staged release into /srv/NAME/releases/<release>, copies the
+# staged config to /srv/NAME/shared/app.env, makes the links in the release's
+# .platform/links, runs .platform/pre-start, switches current, restarts the
+# release's ecosystem.config.cjs in the user's PM2 and checks
+# http://127.0.0.1:<port><health_path> from the app's metadata; when that fails
+# it rolls back to the previous release.
 #
-# Knobs (environment): SRV_DIR (/srv), APP_USER (app), KEEP_RELEASES (5),
-# HEALTH_TIMEOUT seconds (30), HEALTH_INTERVAL seconds (2), PLATFORM_SYNC (the
-# sync script), and those of platform-common.sh.
+# Knobs (environment): SRV_DIR (/srv), HOME_BASE (/home), STAGING_DIR
+# (/run/platform), KEEP_RELEASES (5), HEALTH_TIMEOUT seconds (30),
+# HEALTH_INTERVAL seconds (2), PLATFORM_SYNC (the sync script), and those of
+# platform-common.sh.
 set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -26,7 +35,8 @@ LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 . "$LIB_DIR/platform-common.sh"
 
 SRV_DIR="${SRV_DIR:-/srv}"
-APP_USER="${APP_USER:-app}"
+HOME_BASE="${HOME_BASE:-/home}"
+STAGING_DIR="${STAGING_DIR:-/run/platform}"
 KEEP_RELEASES="${KEEP_RELEASES:-5}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-30}"
 HEALTH_INTERVAL="${HEALTH_INTERVAL:-2}"
@@ -70,13 +80,57 @@ check_url(){
     || die "not a release of $APP: $URL (expected gs://$RELEASES_BUCKET/$APP/<release>.tar.gz)"
 }
 
-# as_root: sync the VM, then continue as the app user.
+# stage <dir>: downloads the release and the config into dir, readable by the
+# app's group only. Dies (after removing dir) when a step fails.
+stage(){
+  local dir="$1" group
+  group="$(app_user "$APP")"
+  rm -rf "$dir"
+  if ! { mkdir -p "$dir" && chmod 755 "$(dirname "$dir")" && chmod 750 "$dir" && chgrp "$group" "$dir"; }; then
+    rm -rf "$dir"
+    die "cannot create $dir"
+  fi
+  log "Downloading $URL"
+  if ! gcloud storage cp "$URL" "$dir/release.tar.gz"; then
+    rm -rf "$dir"
+    die "cannot download $URL"
+  fi
+  log "Fetching the config ($APP-env)"
+  if ! (umask 027 && gcloud secrets versions access latest --secret="$APP-env" > "$dir/app.env"); then
+    rm -rf "$dir"
+    die "cannot read the secret $APP-env"
+  fi
+  if ! { chgrp "$group" "$dir/release.tar.gz" "$dir/app.env" && chmod 640 "$dir/release.tar.gz" "$dir/app.env"; }; then
+    rm -rf "$dir"
+    die "cannot hand $dir to $group"
+  fi
+}
+
+# as_root: sync the VM, stage what the app user cannot fetch, then continue as
+# the app user.
+# The app's metadata goes along to the app phase because the app user cannot
+# reach the metadata server.
 as_root(){
+  local staging="$STAGING_DIR/$APP" user rc=0
+  local -a app_phase
   if [ "$CMD" = activate ]; then check_url; fi
+  APP_JSON="$(app_json "$APP")"
+  [ -n "$APP_JSON" ] || die "no valid vm-app-$APP in the project metadata"
   cd /
   "$PLATFORM_SYNC" || warn "platform-sync reported problems (see above); continuing"
-  exec runuser -u "$APP_USER" -- env HOME="/home/$APP_USER" PLATFORM_SWITCHED=1 \
-    bash "$LIB_DIR/platform-deploy.sh" --app "$APP" "$CMD" ${URL:+"$URL"}
+  user="$(app_user "$APP")"
+  app_phase=(runuser -u "$user" -- env HOME="$HOME_BASE/$user" PLATFORM_SWITCHED=1
+    PLATFORM_APP_JSON="$APP_JSON" bash "$LIB_DIR/platform-deploy.sh" --app "$APP")
+  if [ "$CMD" != activate ]; then
+    exec "${app_phase[@]}" "$CMD"
+  fi
+  trap 'rm -rf "$staging"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  stage "$staging"
+  "${app_phase[@]}" activate "$URL" || rc=$?
+  rm -rf "$staging"
+  exit "$rc"
 }
 
 current_target(){
@@ -130,12 +184,13 @@ healthy(){
   done
 }
 
-fetch_config(){
-  log "Fetching the config ($APP-env)"
-  (
-    umask 077
-    gcloud secrets versions access latest --secret="$APP-env" > "$SHARED/app.env.tmp"
-  ) || die "cannot read the secret $APP-env"
+# install_config: copies the config the root phase staged to shared/app.env.
+install_config(){
+  local staged="$STAGING_DIR/$APP/app.env"
+  [ -f "$staged" ] || die "no staged config for $APP"
+  log "Installing the config ($APP-env)"
+  rm -f "$SHARED/app.env.tmp"
+  (umask 077 && cp "$staged" "$SHARED/app.env.tmp") || die "cannot copy the staged config for $APP"
   mv "$SHARED/app.env.tmp" "$SHARED/app.env"
 }
 
@@ -185,9 +240,9 @@ unpack(){
   log "Unpacking $release"
   rm -rf "$incoming"
   mkdir -p "$incoming"
-  if ! gcloud storage cat "$URL" | tar -xzf - -C "$incoming"; then
+  if ! tar -xzf "$STAGING_DIR/$APP/release.tar.gz" -C "$incoming"; then
     rm -rf "$incoming"
-    die "cannot download or unpack $URL"
+    die "cannot unpack $URL"
   fi
   if [ ! -f "$incoming/ecosystem.config.cjs" ]; then
     rm -rf "$incoming"
@@ -207,7 +262,7 @@ activate(){
   [ "$previous" != "$dir" ] || die "release $release is already live"
 
   unpack "$release" "$dir"
-  fetch_config
+  install_config
   link_shared "$dir"
   pre_start "$dir" "$previous"
 
@@ -249,7 +304,10 @@ main(){
   if [ "$(id -u)" = 0 ] && [ "${PLATFORM_SWITCHED:-}" != 1 ]; then
     as_root
   fi
-  APP_JSON="$(app_json "$APP")"
+  # Run as the app user by the root phase, which passes the app's metadata; run
+  # directly (an operator as the app user), it reads the metadata itself.
+  APP_JSON="${PLATFORM_APP_JSON:-}"
+  [ -n "$APP_JSON" ] || APP_JSON="$(app_json "$APP")"
   [ -n "$APP_JSON" ] || die "no valid vm-app-$APP in the project metadata"
   RELEASES="$SRV_DIR/$APP/releases"
   SHARED="$SRV_DIR/$APP/shared"

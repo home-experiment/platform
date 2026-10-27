@@ -1,20 +1,26 @@
 #!/usr/bin/env bash
 # Applies the vm-app-<name> project metadata keys to this VM. For each valid
-# app: /srv/<name> directories, its database, its Caddy site, the deploy-<name>
-# wrapper and the sudoers rule that lets the app's deploy account run only that
-# wrapper. Files of apps whose key is gone are removed (directories and
-# databases never are); an invalid app keeps what it had. A Caddy config that
-# does not validate is rolled back to the previous snippets and not reloaded.
-# Runs as root, from startup.sh on every boot and from platform-deploy.sh before
-# every activation; re-running is harmless. Exits non-zero when any step failed.
+# app: its own Linux user app-<name> (home HOME_BASE/app-<name>), /srv/<name>
+# directories owned by that user, its database, its Caddy site, the
+# deploy-<name> wrapper, the sudoers rule that lets the app's deploy account run
+# only that wrapper, and a PM2 systemd unit that resurrects the user's processes
+# at boot. Then an nftables table that stops every app user from reaching the
+# metadata server (169.254.169.254), which hands out the VM service account's
+# credentials. Files of apps whose key is gone are removed (users, directories
+# and databases never are, and the users stay blocked); an invalid app keeps
+# what it had. A Caddy config that does not validate is rolled back to the
+# previous snippets and not reloaded. Runs as root, from startup.sh on every
+# boot and from platform-deploy.sh before every activation; re-running is
+# harmless. Exits non-zero when any step failed.
 #
-# Only /srv/<name> itself is created and chowned, as root. Its subdirectories
-# are created as the app user, so the app (which owns everything below
-# /srv/<name>) cannot make root follow a symlink it planted.
+# Only /srv/<name> itself is created, chowned and chmodded (750), as root. Its
+# subdirectories are created as the app user, so the app (which owns everything
+# below /srv/<name>) cannot make root follow a symlink it planted.
 #
-# Knobs (environment), mostly for tests: SRV_DIR (/srv), CADDY_SITES
-# (/etc/caddy/sites), CADDYFILE (/etc/caddy/Caddyfile), BIN_DIR
-# (/usr/local/bin), SUDOERS_DIR (/etc/sudoers.d), APP_USER (app), and those of
+# Knobs (environment), mostly for tests: SRV_DIR (/srv), HOME_BASE (/home),
+# CADDY_SITES (/etc/caddy/sites), CADDYFILE (/etc/caddy/Caddyfile), BIN_DIR
+# (/usr/local/bin), SUDOERS_DIR (/etc/sudoers.d), SYSTEMD_DIR
+# (/etc/systemd/system), NFT_FILE (/etc/nftables.d/platform.nft), and those of
 # platform-common.sh.
 set -euo pipefail
 
@@ -27,7 +33,9 @@ CADDY_SITES="${CADDY_SITES:-/etc/caddy/sites}"
 CADDYFILE="${CADDYFILE:-/etc/caddy/Caddyfile}"
 BIN_DIR="${BIN_DIR:-/usr/local/bin}"
 SUDOERS_DIR="${SUDOERS_DIR:-/etc/sudoers.d}"
-APP_USER="${APP_USER:-app}"
+HOME_BASE="${HOME_BASE:-/home}"
+SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
+NFT_FILE="${NFT_FILE:-/etc/nftables.d/platform.nft}"
 FAILED=0
 CADDY_CHANGED=0
 CHANGES_DIR=""
@@ -98,13 +106,34 @@ $domains {
 EOF
 }
 
+# sync_user <name>: creates the app's Linux user and group when missing.
+sync_user(){
+  local user
+  user="$(app_user "$1")"
+  if id -u "$user" >/dev/null 2>&1; then return 0; fi
+  log "Creating the user $user"
+  useradd --create-home --home-dir "$HOME_BASE/$user" --shell /bin/bash --user-group "$user"
+}
+
 # sync_dirs <name>: /srv/<name> is created and given to the app as root (only
-# that directory, not following links); everything below it is made as the app.
+# that directory, not following links; /srv is root's, so it cannot be swapped);
+# everything below it is made as the app.
 sync_dirs(){
-  local root="$SRV_DIR/$1"
+  local root="$SRV_DIR/$1" user
+  user="$(app_user "$1")"
   mkdir -p "$root" \
-    && chown -h "$APP_USER:$APP_USER" "$root" \
-    && runuser -u "$APP_USER" -- mkdir -p "$root/releases" "$root/shared/logs"
+    && chown -h "$user:$user" "$root" \
+    && chmod 750 "$root" \
+    && runuser -u "$user" -- mkdir -p "$root/releases" "$root/shared/logs"
+}
+
+# sync_pm2_boot <name>: a systemd unit that starts the user's PM2 daemon at
+# boot and resurrects its saved processes. pm2 writes it once.
+sync_pm2_boot(){
+  local user
+  user="$(app_user "$1")"
+  [ ! -e "$SYSTEMD_DIR/pm2-$user.service" ] || return 0
+  pm2 startup systemd -u "$user" --hp "$HOME_BASE/$user" >/dev/null
 }
 
 sync_db(){
@@ -152,6 +181,11 @@ sync_app(){
   local app="$1" name rc=0
   name="$(jq -r .name <<<"$app")"
   log "Syncing $name"
+  if ! sync_user "$name"; then
+    warn "$name: cannot create the user $(app_user "$name"); the app is not synced"
+    FAILED=1
+    return 0
+  fi
   sync_dirs "$name" || { warn "$name: directories failed"; FAILED=1; }
   sync_db "$(jq -r .db <<<"$app")" || { warn "$name: database failed"; FAILED=1; }
   snapshot "$CADDY_SITES/$name.caddy"
@@ -163,6 +197,66 @@ sync_app(){
   esac
   sync_wrapper "$name"
   sync_sudoers "$name" "$(jq -r .deploy_user <<<"$app")" || FAILED=1
+  sync_pm2_boot "$name" || { warn "$name: pm2 startup failed"; FAILED=1; }
+}
+
+# app_uids <present names>: the uids of the existing app users, numerically
+# sorted and joined with ", ". Besides the apps that have a metadata key, the
+# names of the /srv directories (root's, never removed) are checked, so the
+# users of removed apps stay blocked.
+app_uids(){
+  local dir name uid
+  {
+    printf '%s\n' "$1"
+    for dir in "$SRV_DIR"/*/; do
+      [ -d "$dir" ] || continue
+      basename "$dir"
+    done
+  } | sort -u | while IFS= read -r name; do
+    [[ "$name" =~ $APP_NAME_RE ]] || continue
+    uid="$(id -u "$(app_user "$name")" 2>/dev/null)" || continue
+    [[ "$uid" =~ ^[0-9]+$ ]] || continue
+    echo "$uid"
+  done | sort -nu | paste -sd, - | sed 's/,/, /g'
+}
+
+# nft_rules <uids>: the nftables table; without uids the chain stays empty.
+nft_rules(){
+  cat <<'EOF'
+# Written by platform-sync: app users may not reach the metadata server, which
+# hands out the VM service account's credentials.
+table inet platform
+delete table inet platform
+table inet platform {
+	chain output {
+		type filter hook output priority 0; policy accept;
+EOF
+  if [ -n "$1" ]; then
+    printf '\t\tip daddr 169.254.169.254 meta skuid { %s } reject\n' "$1"
+  fi
+  printf '\t}\n}\n'
+}
+
+# sync_nft <present names>: writes NFT_FILE and loads it when it changed or
+# the table is not loaded (after a reboot).
+sync_nft(){
+  local rc=0
+  if ! mkdir -p "$(dirname "$NFT_FILE")"; then
+    warn "cannot create $(dirname "$NFT_FILE")"
+    FAILED=1
+    return 0
+  fi
+  install_file "$NFT_FILE" 644 < <(nft_rules "$(app_uids "$1")") || rc=$?
+  case "$rc" in
+    0) ;;
+    2) if nft list table inet platform >/dev/null 2>&1; then return 0; fi ;;
+    *) warn "cannot write $NFT_FILE"; FAILED=1; return 0 ;;
+  esac
+  log "Loading $NFT_FILE"
+  if ! nft -f "$NFT_FILE"; then
+    warn "nft cannot load $NFT_FILE; app users may still reach the metadata server"
+    FAILED=1
+  fi
 }
 
 # ours_wrapper <file>: true when the file was written by this script.
@@ -240,6 +334,7 @@ main(){
     sync_app "$app"
   done <<<"$apps"
   remove_gone "$present"
+  sync_nft "$present"
   reload_caddy
   exit "$FAILED"
 }

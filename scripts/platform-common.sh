@@ -10,7 +10,8 @@
 PLATFORM_CONF="${PLATFORM_CONF:-/etc/platform/platform.conf}"
 MYSQL_DEFAULTS="${MYSQL_DEFAULTS:-/root/.my.cnf}"
 METADATA_URL="http://metadata.google.internal/computeMetadata/v1/project/attributes/?recursive=true"
-APP_NAME_RE='^[a-z][a-z0-9-]{1,30}$'
+# 2-23 characters, as in Terraform, so app-<name> fits the 32-character user name limit.
+APP_NAME_RE='^[a-z][a-z0-9-]{1,22}$'
 DB_NAME_RE='^[a-z][a-z0-9_]{1,63}$'
 PORT_RE='^[1-9][0-9]{3,4}$'
 DEPLOY_USER_RE='^sa_[0-9]{1,40}$'
@@ -20,6 +21,9 @@ HEALTH_PATH_RE='^/[A-Za-z0-9._~/-]*$'
 log(){ echo "=== $* ==="; }
 warn(){ echo "warning: $*" >&2; }
 die(){ echo "error: $*" >&2; exit 1; }
+
+# app_user <name>: the Linux user that owns /srv/<name> and runs the app's processes.
+app_user(){ echo "app-$1"; }
 
 # load_conf: sets RELEASES_BUCKET and BACKUPS_BUCKET from PLATFORM_CONF.
 load_conf(){
