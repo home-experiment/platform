@@ -107,6 +107,14 @@ test_invalid_apps_skipped(){
   done
 }
 
+test_domain_with_newline_skipped(){
+  metadata \
+    "vm-app-good=$(app_value good 4100)" \
+    "vm-app-twodomains=$(app_value twodomains 4101 '.domains = ["a.example.com\nb.example.com"]')"
+  assert_eq "$(names)" "good" "newline domain left out"
+  grep -q "vm-app-twodomains: bad domain" "$WORK/err.log" || fail "no warning for newline domain"
+}
+
 test_duplicate_port_skips_both(){
   metadata "vm-app-one=$(app_value one 4100)" "vm-app-two=$(app_value two 4100)" \
     "vm-app-three=$(app_value three 4200)"

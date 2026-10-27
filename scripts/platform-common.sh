@@ -58,7 +58,7 @@ present_apps(){
 # check_app <key> <value>: prints the app as normalised JSON when the value is
 # valid; otherwise says why on stderr and returns 1.
 check_app(){
-  local key="$1" app name port db user health domain
+  local key="$1" app name port db user health
   app="$(jq -cn --arg v "$2" '$v | fromjson? | select(type == "object")')"
   if [ -z "$app" ]; then
     warn "$key: the value is not a JSON object"
@@ -82,9 +82,13 @@ check_app(){
     warn "$key: domains must be a non-empty list of host names"
     return 1
   fi
-  while IFS= read -r domain; do
-    if ! [[ "$domain" =~ $DOMAIN_RE ]]; then warn "$key: bad domain '$domain'"; return 1; fi
-  done < <(jq -r '.domains[]' <<<"$app")
+  # Checked per element inside jq: a bash line loop would accept a value with an
+  # embedded newline as two valid domains. Control characters are refused outright.
+  if ! jq -e --arg re "$DOMAIN_RE" \
+    'all(.domains[]; (test("[[:cntrl:]]") | not) and test($re))' <<<"$app" >/dev/null; then
+    warn "$key: bad domain (each must be a host name without control characters)"
+    return 1
+  fi
   jq -cn --arg name "$name" --argjson port "$port" --argjson domains "$(jq -c .domains <<<"$app")" \
     --arg db "$db" --arg health "$health" --arg user "$user" \
     '{name: $name, port: $port, domains: $domains, db: $db, health_path: $health, deploy_user: $user}'
