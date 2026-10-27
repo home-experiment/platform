@@ -6,7 +6,7 @@
 # only that wrapper, and a PM2 systemd unit that resurrects the user's processes
 # at boot. Then an nftables table that stops every app user from reaching the
 # metadata server (169.254.169.254), which hands out the VM service account's
-# credentials. Files of apps whose key is gone are removed (users, directories
+# credentials; only DNS (port 53) on that address stays open to them. Files of apps whose key is gone are removed (users, directories
 # and databases never are, and the users stay blocked); an invalid app keeps
 # what it had. A Caddy config that does not validate is rolled back to the
 # previous snippets and not reloaded. Runs as root, from startup.sh on every
@@ -224,7 +224,8 @@ app_uids(){
 nft_rules(){
   cat <<'EOF'
 # Written by platform-sync: app users may not reach the metadata server, which
-# hands out the VM service account's credentials.
+# hands out the VM service account's credentials. DNS (port 53) on the same
+# address stays allowed.
 table inet platform
 delete table inet platform
 table inet platform {
@@ -232,7 +233,7 @@ table inet platform {
 		type filter hook output priority 0; policy accept;
 EOF
   if [ -n "$1" ]; then
-    printf '\t\tip daddr 169.254.169.254 meta skuid { %s } reject\n' "$1"
+    printf '\t\tip daddr 169.254.169.254 meta skuid { %s } th dport != 53 reject\n' "$1"
   fi
   printf '\t}\n}\n'
 }

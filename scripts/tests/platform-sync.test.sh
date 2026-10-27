@@ -87,7 +87,8 @@ run_sync(){ bash "$SCRIPTS/platform-sync.sh" > "$WORK/out.log" 2>&1; }
 nft_expected(){
   printf '%s\n' \
     "# Written by platform-sync: app users may not reach the metadata server, which" \
-    "# hands out the VM service account's credentials." \
+    "# hands out the VM service account's credentials. DNS (port 53) on the same" \
+    "# address stays allowed." \
     "table inet platform" \
     "delete table inet platform" \
     "table inet platform {" \
@@ -109,7 +110,7 @@ test_sync_app(){
   grep -q "^runuser -u app-demo -- mkdir -p $SRV_DIR/demo/releases $SRV_DIR/demo/shared/logs" "$STUB_LOG" \
     || fail "subdirectories not created as the app user"
   assert_eq "$(grep '^pm2' "$STUB_LOG")" "pm2 startup systemd -u app-demo --hp $HOME_BASE/app-demo" "pm2 startup"
-  assert_eq "$(cat "$NFT_FILE")" "$(nft_expected "ip daddr 169.254.169.254 meta skuid { 1001 } reject")" "nft file"
+  assert_eq "$(cat "$NFT_FILE")" "$(nft_expected "ip daddr 169.254.169.254 meta skuid { 1001 } th dport != 53 reject")" "nft file"
   grep -q "^nft -f $NFT_FILE" "$STUB_LOG" || fail "nft rules not loaded"
   grep -q 'mariadb -e CREATE DATABASE IF NOT EXISTS `demo` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci' "$STUB_LOG" \
     || fail "database not created"
@@ -170,7 +171,7 @@ test_two_apps_uids_sorted(){
   metadata "vm-app-demo=$(app_value demo 4100)" "vm-app-other=$(app_value other 4200)"
   run_sync || fail "sync exited non-zero: $(cat "$WORK/out.log")"
   assert_eq "$(grep '^useradd' "$STUB_LOG" | wc -l | tr -d ' ')" "1" "useradd only for the new user"
-  assert_eq "$(cat "$NFT_FILE")" "$(nft_expected "ip daddr 169.254.169.254 meta skuid { 999, 1002 } reject")" "nft file"
+  assert_eq "$(cat "$NFT_FILE")" "$(nft_expected "ip daddr 169.254.169.254 meta skuid { 999, 1002 } th dport != 53 reject")" "nft file"
 }
 
 test_useradd_failure_skips_app(){
@@ -182,7 +183,7 @@ test_useradd_failure_skips_app(){
   [ ! -e "$CADDY_SITES/demo.caddy" ] || fail "Caddy site written for an app without a user"
   [ -f "$CADDY_SITES/other.caddy" ] || fail "other app not synced"
   [ -d "$SRV_DIR/other/releases" ] || fail "other app's directories missing"
-  assert_eq "$(cat "$NFT_FILE")" "$(nft_expected "ip daddr 169.254.169.254 meta skuid { 1001 } reject")" "nft file"
+  assert_eq "$(cat "$NFT_FILE")" "$(nft_expected "ip daddr 169.254.169.254 meta skuid { 1001 } th dport != 53 reject")" "nft file"
 }
 
 test_no_app_users_keeps_empty_chain(){
@@ -196,7 +197,7 @@ test_removed_app_user_stays_blocked(){
   run_sync || fail "first sync failed: $(cat "$WORK/out.log")"
   metadata "vm-app-other=$(app_value other 4200)"
   run_sync || fail "second sync failed: $(cat "$WORK/out.log")"
-  assert_eq "$(cat "$NFT_FILE")" "$(nft_expected "ip daddr 169.254.169.254 meta skuid { 1001, 1002 } reject")" "nft file"
+  assert_eq "$(cat "$NFT_FILE")" "$(nft_expected "ip daddr 169.254.169.254 meta skuid { 1001, 1002 } th dport != 53 reject")" "nft file"
 }
 
 test_nft_failure_reported(){
