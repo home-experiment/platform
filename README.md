@@ -47,7 +47,7 @@ terraform -chdir=live plan -out=live.tfplan
 terraform -chdir=live apply live.tfplan
 ```
 
-`billing_account_id` and `alert_email` are required. The optional variables are `budget_amount`, `machine_type`, `github_owner` and `github_owner_id`.
+`billing_account_id` and `alert_email` are required. The optional variables are `budget_amount` (default 10), `machine_type` (default `e2-micro`), `github_owner` (default `home-experiment`) and `github_owner_id` (default `348538226`, the numeric id of `home-experiment`).
 
 After any change to `live/startup.sh` or `scripts/`, apply, then re-run the startup script on the VM. The apply only updates the VM's metadata; the VM picks the new scripts up when the startup script runs.
 
@@ -75,21 +75,21 @@ App names are 2 to 23 characters: lowercase letters, digits and dashes, starting
    }
    ```
 
-   The app's own backend prefix is the app name.
+   The `ref` tag must exist in the platform repository (see Development). The app's own backend prefix is the app name.
 2. Apply the app root.
 3. Put the app's config file into the secret the module created:
 
    ```bash
    gcloud secrets versions add <name>-env --data-file=<file> --project pytsekas
    ```
-4. Re-run the startup script (command above), or wait for the first deploy, which runs `platform-sync` itself. This creates the Linux user `app-<name>`, `/srv/<name>`, the database, the Caddy site and the deploy wrapper `/usr/local/bin/deploy-<name>`.
+4. Before the first deploy, run `sudo platform-sync` on the VM (over `ssh_command`) or re-run the startup script (command above). The first deploy fails without this: the deploy account can only run the wrapper, and `platform-sync` writes the wrapper and its sudoers rule. The sync creates the Linux user `app-<name>`, `/srv/<name>`, the database, the Caddy site and the deploy wrapper `/usr/local/bin/deploy-<name>`.
 5. Create the database user once, over SSH (`terraform -chdir=live output -raw ssh_command`):
 
    ```bash
    sudo mariadb -e "CREATE USER '<user>'@'localhost' IDENTIFIED BY '<password>'; GRANT ALL ON <db>.* TO '<user>'@'localhost';"
    ```
 
-   Put the same values in the config file of step 3 and add a new secret version. Never create `/root/.my.cnf`. The platform scripts run as root and log in to MariaDB over the socket, and a login file written for one app breaks database creation and backups for the others.
+   Put the same values in the config file of step 3 and add a new secret version. The values reach the app's config file on the VM only with the next deploy. Never create `/root/.my.cnf`. The platform scripts run as root and log in to MariaDB over the socket, and a login file written for one app breaks database creation and backups for the others.
 6. Point DNS at the static IP: `terraform -chdir=live output -raw static_ip`. Caddy can only get a certificate once the host name resolves to it.
 7. Set these GitHub repository variables on the app's repository. The repository must belong to `home-experiment`; the WIF provider rejects any other owner.
 
@@ -118,7 +118,7 @@ App names are 2 to 23 characters: lowercase letters, digits and dashes, starting
    gcloud compute ssh film-picker-vm --zone "$ZONE" --tunnel-through-iap --quiet --strict-host-key-checking=no --ssh-key-expire-after=30m --command "sudo /usr/local/bin/deploy-<name> activate gs://$BUCKET/<name>/$SHA.tar.gz"
    ```
 
-The app's deploy account can do two things only: upload objects under `<name>/` in the releases bucket, and run `sudo /usr/local/bin/deploy-<name>` on the VM (OS Login without admin rights plus a sudoers rule for that one wrapper).
+The app's deploy account can do two things only (this is about what it can do, not its role list; it also holds the grants SSH through IAP needs: `compute.viewer`, IAP tunnel access and `serviceAccountUser` on the VM's service account): upload objects under `<name>/` in the releases bucket, and run `sudo /usr/local/bin/deploy-<name>` on the VM (OS Login without admin rights plus a sudoers rule for that one wrapper).
 
 ## Operating the VM
 
@@ -159,4 +159,4 @@ terraform fmt -check -recursive
 
 The tests are plain Bash files that put stubs on `PATH`. CI runs the same three commands plus `terraform validate`.
 
-Modules are released by tagging `vX.Y.Z`. Apps pin the tag in the module `source` (`?ref=v1.0.0`), so a change to a module reaches an app only when the app bumps its tag and applies.
+Modules are released by tagging `vX.Y.Z`. Apps pin the tag in the module `source` (`?ref=v1.0.0`; the tag must exist before an app can use it), so a change to a module reaches an app only when the app bumps its tag and applies.
