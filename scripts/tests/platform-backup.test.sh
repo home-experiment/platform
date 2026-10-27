@@ -27,7 +27,8 @@ setup(){
   WORK="$(mktemp -d)"
   export PLATFORM_METADATA_FILE="$WORK/metadata.json" PLATFORM_CONF="$WORK/platform.conf"
   export MYSQL_DEFAULTS="$WORK/no-login-file" STUB_LOG="$WORK/calls.log" UPLOADS="$WORK/uploads"
-  export DUMP_BAD="" GCLOUD_EXIT=0
+  export DUMP_BAD="" GCLOUD_EXIT=0 BACKUP_TMP_DIR="$WORK/tmp"
+  mkdir -p "$BACKUP_TMP_DIR"
   printf 'RELEASES_BUCKET=rel\nBACKUPS_BUCKET=bak\n' > "$PLATFORM_CONF"
   jq -cn '{
     "vm-app-demo": ({name: "demo", port: 4100, domains: ["demo.example.com"], db: "demo_db", deploy_user: "sa_1"} | tojson),
@@ -39,7 +40,8 @@ setup(){
   stub mariadb-dump 'db="${!#}"
 case " $DUMP_BAD " in *" $db "*) exit 2 ;; esac
 echo "-- dump of $db"'
-  stub gcloud '[ "$GCLOUD_EXIT" = 0 ] || exit "$GCLOUD_EXIT"
+  stub gcloud 'echo "upload-from $3" >> "$STUB_LOG"
+[ "$GCLOUD_EXIT" = 0 ] || exit "$GCLOUD_EXIT"
 cp "$3" "$UPLOADS/$(echo "$4" | sed "s:^gs\://::; s:/:__:g")"'
   export PATH="$WORK/bin:$ORIG_PATH"
 }
@@ -63,7 +65,9 @@ test_backs_up_every_db(){
   [[ "$other" =~ ^bak__other__other-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}\.sql\.gz$ ]] || fail "other object name: '$other'"
   assert_eq "$(gzip -dc "$UPLOADS/$demo")" "-- dump of demo_db" "demo dump content"
   grep -q "mariadb-dump --single-transaction --routines demo_db" "$STUB_LOG" || fail "dump options"
+  grep -q "upload-from $BACKUP_TMP_DIR/" "$STUB_LOG" || fail "dump not staged in BACKUP_TMP_DIR"
   assert_eq "$(uploaded nodb)" "" "app without db"
+  assert_eq "$(ls -A "$BACKUP_TMP_DIR")" "" "staging dir left behind after success"
 }
 
 test_one_failure_continues(){
@@ -72,11 +76,13 @@ test_one_failure_continues(){
   assert_eq "$(uploaded demo)" "" "failed dump uploaded"
   [ -n "$(uploaded other)" ] || fail "other app not backed up"
   grep -q "backup of demo failed" "$WORK/out.log" || fail "no failure message"
+  assert_eq "$(ls -A "$BACKUP_TMP_DIR")" "" "staging dir left behind after failed dump"
 }
 
 test_upload_failure(){
   export GCLOUD_EXIT=1
   if run_backup; then fail "backup must fail when the upload fails"; fi
+  assert_eq "$(ls -A "$BACKUP_TMP_DIR")" "" "staging dir left behind after failed upload"
 }
 
 for t in $(declare -F | awk '{print $3}' | grep '^test_'); do

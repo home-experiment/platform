@@ -5,22 +5,26 @@
 # "sudo systemctl start platform-backup". One app failing does not stop the
 # others; the exit code is non-zero when any backup failed.
 #
-# Knobs (environment): those of platform-common.sh.
+# Knobs (environment): BACKUP_TMP_DIR (where the compressed dump is staged before
+# upload, default /var/tmp; not /tmp, which is RAM on Debian), plus those of
+# platform-common.sh.
 set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=platform-common.sh
 . "$LIB_DIR/platform-common.sh"
 
+BACKUP_TMP_DIR="${BACKUP_TMP_DIR:-/var/tmp}"
 DUMP=""
 trap 'rm -f "$DUMP"' EXIT
+trap 'exit 1' TERM INT
 
 # backup <name> <db>: dumps to a temp file first so a failed dump never uploads
 # a truncated backup.
 backup(){
   local name="$1" db="$2"
   log "Backing up $name ($db)"
-  DUMP="$(mktemp)"
+  DUMP="$(mktemp "$BACKUP_TMP_DIR/dump.XXXXXX")"
   if ! mariadb_cmd mariadb-dump --single-transaction --routines "$db" | gzip > "$DUMP"; then
     rm -f "$DUMP"
     return 1
