@@ -54,6 +54,7 @@ setup(){
   stub mariadb 'exit "$MARIADB_EXIT"'
   stub caddy 'exit "$CADDY_EXIT"'
   stub systemctl 'exit 0'
+  stub runuser 'while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done; shift; exec "$@"'
   stub visudo 'if [ -n "$VISUDO_BAD" ] && grep -q "$VISUDO_BAD" "$2"; then exit 1; fi'
   export PATH="$WORK/bin:$ORIG_PATH"
 }
@@ -70,7 +71,9 @@ test_sync_app(){
   run_sync || fail "sync exited non-zero: $(cat "$WORK/out.log")"
   [ -d "$SRV_DIR/demo/releases" ] || fail "releases directory missing"
   [ -d "$SRV_DIR/demo/shared/logs" ] || fail "logs directory missing"
-  grep -q "chown app:app $SRV_DIR/demo" "$STUB_LOG" || fail "directories not given to app"
+  assert_eq "$(grep '^chown' "$STUB_LOG")" "chown -h app:app $SRV_DIR/demo" "chown calls"
+  grep -q "^runuser -u app -- mkdir -p $SRV_DIR/demo/releases $SRV_DIR/demo/shared/logs" "$STUB_LOG" \
+    || fail "subdirectories not created as the app user"
   grep -q 'mariadb -e CREATE DATABASE IF NOT EXISTS `demo` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci' "$STUB_LOG" \
     || fail "database not created"
   assert_eq "$(cat "$CADDY_SITES/demo.caddy")" "$(cat <<'EOF'
@@ -145,10 +148,43 @@ test_bad_sudoers_not_installed(){
 }
 
 test_caddy_invalid_no_reload(){
-  export CADDY_EXIT=1
   metadata "vm-app-demo=$(app_value demo 4100)"
+  run_sync || fail "first sync failed: $(cat "$WORK/out.log")"
+  export CADDY_EXIT=1
+  : > "$STUB_LOG"
+  metadata "vm-app-demo=$(app_value demo 4500)" "vm-app-fresh=$(app_value fresh 4600)"
   if run_sync; then fail "sync must fail when Caddy rejects the config"; fi
   if grep -q "reload-or-restart caddy" "$STUB_LOG"; then fail "an invalid config was reloaded"; fi
+  grep -q "127.0.0.1:4100" "$CADDY_SITES/demo.caddy" || fail "failed change left in the demo snippet"
+  [ ! -e "$CADDY_SITES/fresh.caddy" ] || fail "new snippet left after a failed validation"
+}
+
+test_unrelated_files_survive(){
+  metadata "vm-app-demo=$(app_value demo 4100)"
+  printf '#!/bin/bash\necho manual\n' > "$BIN_DIR/deploy-manual"
+  printf 'admin ALL=(root) NOPASSWD: /bin/true\n' > "$SUDOERS_DIR/platform-admin"
+  run_sync || fail "sync exited non-zero: $(cat "$WORK/out.log")"
+  [ -f "$BIN_DIR/deploy-manual" ] || fail "unrelated wrapper removed"
+  [ -f "$SUDOERS_DIR/platform-admin" ] || fail "unrelated sudoers file removed"
+}
+
+test_unwritable_dir_reports_failure(){
+  metadata "vm-app-demo=$(app_value demo 4100)"
+  chmod 555 "$BIN_DIR"
+  local rc=0
+  run_sync || rc=$?
+  chmod 755 "$BIN_DIR"
+  [ "$rc" -ne 0 ] || fail "sync must fail when a file cannot be written"
+  grep -q "cannot write $BIN_DIR/deploy-demo" "$WORK/out.log" || fail "write error not reported"
+}
+
+test_symlink_below_app_not_followed(){
+  metadata "vm-app-demo=$(app_value demo 4100)"
+  mkdir -p "$WORK/outside" "$SRV_DIR/demo"
+  ln -s "$WORK/outside" "$SRV_DIR/demo/shared"
+  run_sync || fail "sync exited non-zero: $(cat "$WORK/out.log")"
+  if grep '^chown' "$STUB_LOG" | grep -q "$SRV_DIR/demo/"; then fail "chown called below the app directory"; fi
+  if grep '^chown' "$STUB_LOG" | grep -q "$WORK/outside"; then fail "chown followed a symlink out of /srv"; fi
 }
 
 test_db_failure_other_apps_continue(){
