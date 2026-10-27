@@ -83,19 +83,20 @@ teardown(){
 
 run_sync(){ bash "$SCRIPTS/platform-sync.sh" > "$WORK/out.log" 2>&1; }
 
-# nft_expected [rule line]: the nft file platform-sync writes, with that line in the chain.
+# nft_expected: the nft file platform-sync writes.
 nft_expected(){
   printf '%s\n' \
-    "# Written by platform-sync: app users may not reach the metadata server, which" \
-    "# hands out the VM service account's credentials. DNS (port 53) on the same" \
-    "# address stays allowed." \
+    "# Written by platform-sync: every user with uid 1000 or above (apps, deploy" \
+    "# accounts, people) may not reach the metadata server, which hands out the VM" \
+    "# service account's credentials; DNS on port 53 stays allowed." \
     "table inet platform" \
     "delete table inet platform" \
     "table inet platform {" \
     "	chain output {" \
-    "		type filter hook output priority 0; policy accept;"
-  if [ -n "${1:-}" ]; then printf '\t\t%s\n' "$1"; fi
-  printf '%s\n' "	}" "}"
+    "		type filter hook output priority 0; policy accept;" \
+    "		ip daddr 169.254.169.254 meta skuid >= 1000 th dport != 53 reject" \
+    "	}" \
+    "}"
 }
 
 test_sync_app(){
@@ -109,8 +110,9 @@ test_sync_app(){
   assert_eq "$(file_mode "$SRV_DIR/demo")" "750" "app directory mode"
   grep -q "^runuser -u app-demo -- mkdir -p $SRV_DIR/demo/releases $SRV_DIR/demo/shared/logs" "$STUB_LOG" \
     || fail "subdirectories not created as the app user"
-  assert_eq "$(grep '^pm2' "$STUB_LOG")" "pm2 startup systemd -u app-demo --hp $HOME_BASE/app-demo" "pm2 startup"
-  assert_eq "$(cat "$NFT_FILE")" "$(nft_expected "ip daddr 169.254.169.254 meta skuid { 1001 } th dport != 53 reject")" "nft file"
+  assert_eq "$(grep '^pm2' "$STUB_LOG" | tr '\n' '|')" \
+    "pm2 startup systemd -u app-demo --hp $HOME_BASE/app-demo|pm2 kill|" "pm2 startup, then root's daemon stopped"
+  assert_eq "$(cat "$NFT_FILE")" "$(nft_expected)" "nft file"
   grep -q "^nft -f $NFT_FILE" "$STUB_LOG" || fail "nft rules not loaded"
   grep -q 'mariadb -e CREATE DATABASE IF NOT EXISTS `demo` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci' "$STUB_LOG" \
     || fail "database not created"
@@ -153,7 +155,7 @@ test_second_run_no_reload(){
   run_sync || fail "second sync failed: $(cat "$WORK/out.log")"
   if grep -q "reload-or-restart caddy" "$STUB_LOG"; then fail "Caddy reloaded although nothing changed"; fi
   if grep -q "^useradd" "$STUB_LOG"; then fail "useradd called for an existing user"; fi
-  if grep -q "^pm2 startup" "$STUB_LOG"; then fail "pm2 startup called although the unit exists"; fi
+  if grep -q "^pm2" "$STUB_LOG"; then fail "pm2 called although the unit exists"; fi
   if grep -q "^nft -f" "$STUB_LOG"; then fail "nft rules reloaded although nothing changed"; fi
 }
 
@@ -166,12 +168,11 @@ test_nft_reloaded_when_table_missing(){
   grep -q "^nft -f $NFT_FILE" "$STUB_LOG" || fail "nft rules not loaded although the table is missing"
 }
 
-test_two_apps_uids_sorted(){
-  echo "app-other:999" > "$PASSWD"
+test_existing_user_not_recreated(){
+  echo "app-other:1500" > "$PASSWD"
   metadata "vm-app-demo=$(app_value demo 4100)" "vm-app-other=$(app_value other 4200)"
   run_sync || fail "sync exited non-zero: $(cat "$WORK/out.log")"
   assert_eq "$(grep '^useradd' "$STUB_LOG" | wc -l | tr -d ' ')" "1" "useradd only for the new user"
-  assert_eq "$(cat "$NFT_FILE")" "$(nft_expected "ip daddr 169.254.169.254 meta skuid { 999, 1002 } th dport != 53 reject")" "nft file"
 }
 
 test_useradd_failure_skips_app(){
@@ -183,21 +184,13 @@ test_useradd_failure_skips_app(){
   [ ! -e "$CADDY_SITES/demo.caddy" ] || fail "Caddy site written for an app without a user"
   [ -f "$CADDY_SITES/other.caddy" ] || fail "other app not synced"
   [ -d "$SRV_DIR/other/releases" ] || fail "other app's directories missing"
-  assert_eq "$(cat "$NFT_FILE")" "$(nft_expected "ip daddr 169.254.169.254 meta skuid { 1001 } th dport != 53 reject")" "nft file"
 }
 
-test_no_app_users_keeps_empty_chain(){
+test_nft_written_without_apps(){
   metadata
   run_sync || fail "sync exited non-zero: $(cat "$WORK/out.log")"
-  assert_eq "$(cat "$NFT_FILE")" "$(nft_expected)" "nft file without users"
-}
-
-test_removed_app_user_stays_blocked(){
-  metadata "vm-app-demo=$(app_value demo 4100)" "vm-app-other=$(app_value other 4200)"
-  run_sync || fail "first sync failed: $(cat "$WORK/out.log")"
-  metadata "vm-app-other=$(app_value other 4200)"
-  run_sync || fail "second sync failed: $(cat "$WORK/out.log")"
-  assert_eq "$(cat "$NFT_FILE")" "$(nft_expected "ip daddr 169.254.169.254 meta skuid { 1001, 1002 } th dport != 53 reject")" "nft file"
+  assert_eq "$(cat "$NFT_FILE")" "$(nft_expected)" "nft file without apps"
+  grep -q "^nft -f $NFT_FILE" "$STUB_LOG" || fail "nft rules not loaded"
 }
 
 test_nft_failure_reported(){

@@ -44,7 +44,7 @@ PLATFORM_SYNC="${PLATFORM_SYNC:-$LIB_DIR/platform-sync.sh}"
 RELEASE_RE='^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$'
 LINK_PATH_RE='^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$'
 
-APP="" CMD="" URL="" APP_JSON="" RELEASES="" SHARED="" CURRENT=""
+APP="" CMD="" URL="" APP_JSON="" RELEASES="" SHARED="" CURRENT="" STAGING_PATH=""
 
 usage(){ awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "${BASH_SOURCE[0]}"; }
 
@@ -111,8 +111,9 @@ stage(){
 # The app's metadata goes along to the app phase because the app user cannot
 # reach the metadata server.
 as_root(){
-  local staging="$STAGING_DIR/$APP" user rc=0
+  local user rc=0
   local -a app_phase
+  STAGING_PATH="$STAGING_DIR/$APP"
   if [ "$CMD" = activate ]; then check_url; fi
   APP_JSON="$(app_json "$APP")"
   [ -n "$APP_JSON" ] || die "no valid vm-app-$APP in the project metadata"
@@ -124,12 +125,12 @@ as_root(){
   if [ "$CMD" != activate ]; then
     exec "${app_phase[@]}" "$CMD"
   fi
-  trap 'rm -rf "$staging"' EXIT
+  trap 'rm -rf "$STAGING_PATH"' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  stage "$staging"
+  stage "$STAGING_PATH"
   "${app_phase[@]}" activate "$URL" || rc=$?
-  rm -rf "$staging"
+  rm -rf "$STAGING_PATH"
   exit "$rc"
 }
 

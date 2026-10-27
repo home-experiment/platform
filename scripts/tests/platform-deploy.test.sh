@@ -324,6 +324,19 @@ test_as_root_stages_and_switches_user(){
   [ ! -e "$STAGING_DIR/demo" ] || fail "staging directory left behind"
   assert_eq "$(current)" "$ROOT/releases/r1" "current"
   assert_eq "$(cat "$ROOT/shared/app.env")" "DB_HOST=localhost" "config content"
+  if grep -q "unbound variable" "$WORK/out.log"; then fail "unbound variable: $(cat "$WORK/out.log")"; fi
+}
+
+test_as_root_rejects_unknown_app_before_sync(){
+  export STUB_UID=0
+  make_tar r1
+  if bash "$SCRIPTS/platform-deploy.sh" --app ghost activate gs://rel/ghost/r1.tar.gz > "$WORK/out.log" 2>&1; then
+    fail "activate of an unknown app succeeded"
+  fi
+  out_has "no valid vm-app-ghost" "message"
+  if grep -q "fake-sync" "$STUB_LOG"; then fail "sync ran for an unknown app"; fi
+  no_gcloud "unknown app"
+  if grep -q "^runuser" "$STUB_LOG"; then fail "switched user for an unknown app"; fi
 }
 
 test_as_root_removes_staging_after_failed_app_phase(){

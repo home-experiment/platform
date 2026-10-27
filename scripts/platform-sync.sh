@@ -4,11 +4,12 @@
 # directories owned by that user, its database, its Caddy site, the
 # deploy-<name> wrapper, the sudoers rule that lets the app's deploy account run
 # only that wrapper, and a PM2 systemd unit that resurrects the user's processes
-# at boot. Then an nftables table that stops every app user from reaching the
-# metadata server (169.254.169.254), which hands out the VM service account's
-# credentials; only DNS (port 53) on that address stays open to them. Files of apps whose key is gone are removed (users, directories
-# and databases never are, and the users stay blocked); an invalid app keeps
-# what it had. A Caddy config that does not validate is rolled back to the
+# at boot. Then an nftables table that stops every user with uid 1000 or above
+# (apps, deploy accounts, people) from reaching the metadata server
+# (169.254.169.254), which hands out the VM service account's credentials; only
+# DNS (port 53) on that address stays open to them. Files of apps whose key is
+# gone are removed (users, directories and databases never are); an invalid app
+# keeps what it had. A Caddy config that does not validate is rolled back to the
 # previous snippets and not reloaded. Runs as root, from startup.sh on every
 # boot and from platform-deploy.sh before every activation; re-running is
 # harmless. Exits non-zero when any step failed.
@@ -128,12 +129,16 @@ sync_dirs(){
 }
 
 # sync_pm2_boot <name>: a systemd unit that starts the user's PM2 daemon at
-# boot and resurrects its saved processes. pm2 writes it once.
+# boot and resurrects its saved processes. pm2 writes it once. pm2 run as root
+# may leave a root PM2 daemon behind; it is stopped again (only root's daemon:
+# the app's own daemon belongs to its user).
 sync_pm2_boot(){
-  local user
+  local user rc=0
   user="$(app_user "$1")"
   [ ! -e "$SYSTEMD_DIR/pm2-$user.service" ] || return 0
-  pm2 startup systemd -u "$user" --hp "$HOME_BASE/$user" >/dev/null
+  pm2 startup systemd -u "$user" --hp "$HOME_BASE/$user" >/dev/null || rc=$?
+  pm2 kill >/dev/null 2>&1 || true
+  return "$rc"
 }
 
 sync_db(){
@@ -200,46 +205,26 @@ sync_app(){
   sync_pm2_boot "$name" || { warn "$name: pm2 startup failed"; FAILED=1; }
 }
 
-# app_uids <present names>: the uids of the existing app users, numerically
-# sorted and joined with ", ". Besides the apps that have a metadata key, the
-# names of the /srv directories (root's, never removed) are checked, so the
-# users of removed apps stay blocked.
-app_uids(){
-  local dir name uid
-  {
-    printf '%s\n' "$1"
-    for dir in "$SRV_DIR"/*/; do
-      [ -d "$dir" ] || continue
-      basename "$dir"
-    done
-  } | sort -u | while IFS= read -r name; do
-    [[ "$name" =~ $APP_NAME_RE ]] || continue
-    uid="$(id -u "$(app_user "$name")" 2>/dev/null)" || continue
-    [[ "$uid" =~ ^[0-9]+$ ]] || continue
-    echo "$uid"
-  done | sort -nu | paste -sd, - | sed 's/,/, /g'
-}
-
-# nft_rules <uids>: the nftables table; without uids the chain stays empty.
+# nft_rules: the nftables table. System users (below 1000: root, the guest
+# agent, chrony with the metadata NTP server) keep access.
 nft_rules(){
   cat <<'EOF'
-# Written by platform-sync: app users may not reach the metadata server, which
-# hands out the VM service account's credentials. DNS (port 53) on the same
-# address stays allowed.
+# Written by platform-sync: every user with uid 1000 or above (apps, deploy
+# accounts, people) may not reach the metadata server, which hands out the VM
+# service account's credentials; DNS on port 53 stays allowed.
 table inet platform
 delete table inet platform
 table inet platform {
 	chain output {
 		type filter hook output priority 0; policy accept;
+		ip daddr 169.254.169.254 meta skuid >= 1000 th dport != 53 reject
+	}
+}
 EOF
-  if [ -n "$1" ]; then
-    printf '\t\tip daddr 169.254.169.254 meta skuid { %s } th dport != 53 reject\n' "$1"
-  fi
-  printf '\t}\n}\n'
 }
 
-# sync_nft <present names>: writes NFT_FILE and loads it when it changed or
-# the table is not loaded (after a reboot).
+# sync_nft: writes NFT_FILE and loads it when it changed or the table is not
+# loaded (after a reboot).
 sync_nft(){
   local rc=0
   if ! mkdir -p "$(dirname "$NFT_FILE")"; then
@@ -247,7 +232,7 @@ sync_nft(){
     FAILED=1
     return 0
   fi
-  install_file "$NFT_FILE" 644 < <(nft_rules "$(app_uids "$1")") || rc=$?
+  install_file "$NFT_FILE" 644 < <(nft_rules) || rc=$?
   case "$rc" in
     0) ;;
     2) if nft list table inet platform >/dev/null 2>&1; then return 0; fi ;;
@@ -255,7 +240,7 @@ sync_nft(){
   esac
   log "Loading $NFT_FILE"
   if ! nft -f "$NFT_FILE"; then
-    warn "nft cannot load $NFT_FILE; app users may still reach the metadata server"
+    warn "nft cannot load $NFT_FILE; users may still reach the metadata server"
     FAILED=1
   fi
 }
@@ -335,7 +320,7 @@ main(){
     sync_app "$app"
   done <<<"$apps"
   remove_gone "$present"
-  sync_nft "$present"
+  sync_nft
   reload_caddy
   exit "$FAILED"
 }
