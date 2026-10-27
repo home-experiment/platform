@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - run: shellcheck -S warning scripts/*.sh scripts/tests/*.sh live/startup.sh
+
+      - name: Script tests
+        run: for t in scripts/tests/*.test.sh; do bash "$t"; done
+
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v4
+
+      - run: terraform fmt -check -recursive
+
+      - name: Validate every root and module
+        run: |
+          for dir in live modules/github-deployer modules/vm-app; do
+            terraform -chdir="$dir" init -backend=false -input=false
+            terraform -chdir="$dir" validate
+          done
