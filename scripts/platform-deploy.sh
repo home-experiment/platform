@@ -73,8 +73,8 @@ check_url(){
 # as_root: sync the VM, then continue as the app user.
 as_root(){
   if [ "$CMD" = activate ]; then check_url; fi
-  "$PLATFORM_SYNC" || warn "platform-sync reported problems (see above); continuing"
   cd /
+  "$PLATFORM_SYNC" || warn "platform-sync reported problems (see above); continuing"
   exec runuser -u "$APP_USER" -- env HOME="/home/$APP_USER" PLATFORM_SWITCHED=1 \
     bash "$LIB_DIR/platform-deploy.sh" --app "$APP" "$CMD" ${URL:+"$URL"}
 }
@@ -109,9 +109,10 @@ switch_current(){
 }
 
 # The ecosystem file resolves cwd from its real path, so a plain restart would
-# keep the old release; delete and start picks up the new one.
+# keep the old release; delete and start picks up the new one. Deleting by the
+# app's PM2 namespace also stops processes the new release no longer declares.
 restart(){
-  pm2 delete "$CURRENT/ecosystem.config.cjs" >/dev/null 2>&1 || true
+  pm2 delete "$APP" >/dev/null 2>&1 || true
   pm2 start "$CURRENT/ecosystem.config.cjs" || return 1
   pm2 save || return 1
 }

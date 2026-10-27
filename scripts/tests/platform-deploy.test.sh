@@ -99,7 +99,7 @@ test_activate(){
   assert_eq "$(readlink "$ROOT/releases/r1/app/logs")" "$ROOT/shared/logs" "logs link"
   grep -q "gcloud secrets versions access latest --secret=demo-env" "$STUB_LOG" || fail "config not fetched"
   grep -q "pre-start in $ROOT/releases/r1" "$STUB_LOG" || fail "pre-start not run from the release root"
-  grep -q "pm2 delete $ROOT/current/ecosystem.config.cjs" "$STUB_LOG" || fail "pm2 delete not called"
+  grep -q "pm2 delete demo" "$STUB_LOG" || fail "pm2 delete not called"
   grep -q "pm2 start $ROOT/current/ecosystem.config.cjs" "$STUB_LOG" || fail "pm2 start not called"
   grep -q "pm2 save" "$STUB_LOG" || fail "pm2 save not called"
   grep -q "curl .*http://127.0.0.1:4100/health" "$STUB_LOG" || fail "health check not on the app's port and path"
