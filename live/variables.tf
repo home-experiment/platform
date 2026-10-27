@@ -27,6 +27,12 @@ variable "github_owner" {
   default     = "home-experiment"
 }
 
+variable "github_owner_id" {
+  description = "Numeric id of github_owner (gh api orgs/<owner> --jq .id); unlike the name it is never reused"
+  type        = string
+  default     = "348538226"
+}
+
 variable "billing_account_id" {
   description = "Billing account for the budget alert, e.g. 012345-6789AB-CDEF01"
   type        = string

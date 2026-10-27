@@ -13,12 +13,13 @@ resource "google_iam_workload_identity_pool_provider" "github" {
   display_name                       = "GitHub Actions"
 
   attribute_mapping = {
-    "google.subject"             = "assertion.sub"
-    "attribute.repository"       = "assertion.repository"
-    "attribute.repository_owner" = "assertion.repository_owner"
-    "attribute.ref"              = "assertion.ref"
+    "google.subject"                = "assertion.sub"
+    "attribute.repository"          = "assertion.repository"
+    "attribute.repository_owner"    = "assertion.repository_owner"
+    "attribute.repository_owner_id" = "assertion.repository_owner_id"
+    "attribute.ref"                 = "assertion.ref"
   }
-  attribute_condition = "assertion.repository_owner == \"${var.github_owner}\" && assertion.ref == \"refs/heads/main\" && assertion.event_name == \"push\""
+  attribute_condition = "assertion.repository_owner == \"${var.github_owner}\" && assertion.repository_owner_id == \"${var.github_owner_id}\" && assertion.ref == \"refs/heads/main\" && assertion.event_name == \"push\""
 
   oidc {
     issuer_uri = "https://token.actions.githubusercontent.com"

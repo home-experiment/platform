@@ -155,6 +155,8 @@ systemctl enable --now platform-backup.timer
 
 # Apps: directories, databases, Caddy sites, deploy wrappers and sudoers rules.
 "$LIB/platform-sync.sh" || echo "platform-sync reported problems; see above" >&2
-if [ "$caddyfile_changed" = 1 ]; then
+if [ "$caddyfile_changed" = 1 ] && caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
   systemctl reload-or-restart caddy
+elif [ "$caddyfile_changed" = 1 ]; then
+  echo "the Caddy config does not validate; Caddy keeps its previous config" >&2
 fi
