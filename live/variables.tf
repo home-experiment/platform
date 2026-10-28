@@ -5,14 +5,31 @@ variable "project_id" {
 }
 
 variable "region" {
-  description = "Region; e2-micro is only free in us-west1, us-central1 and us-east1"
+  description = "Region; e2-micro is only free in us-west1, us-central1 and us-east1. Changing it replaces the subnet, the static IP and the VM (README \"Moving to another region\")"
   type        = string
   default     = "us-central1"
 }
 
 variable "zone" {
-  type    = string
-  default = "us-central1-a"
+  description = "Zone of the VM; defaults to <region>-a"
+  type        = string
+  default     = null
+}
+
+variable "storage_location" {
+  description = "Location of the releases and backups buckets, independent of region so a region move keeps them. Changing it recreates the buckets and deletes their objects"
+  type        = string
+  default     = "US-CENTRAL1"
+}
+
+variable "vm_deletion_protection" {
+  description = "Set to false only for the apply that moves or deletes the VM"
+  type        = bool
+  default     = true
+}
+
+locals {
+  zone = coalesce(var.zone, "${var.region}-a")
 }
 
 variable "machine_type" {

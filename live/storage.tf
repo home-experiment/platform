@@ -10,7 +10,7 @@ locals {
 resource "google_storage_bucket" "bucket" {
   for_each                    = local.buckets
   name                        = "${var.project_id}-film-picker-${each.key}"
-  location                    = upper(var.region)
+  location                    = var.storage_location
   storage_class               = "STANDARD"
   uniform_bucket_level_access = true
   public_access_prevention    = "enforced"

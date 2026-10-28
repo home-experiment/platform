@@ -9,10 +9,10 @@ resource "google_compute_address" "ip" {
 resource "google_compute_instance" "vm" {
   name                      = "film-picker-vm"
   machine_type              = var.machine_type
-  zone                      = var.zone
+  zone                      = local.zone
   tags                      = ["film-picker"]
   allow_stopping_for_update = true
-  deletion_protection       = true # the database lives on the boot disk
+  deletion_protection       = var.vm_deletion_protection # the database lives on the boot disk
 
   boot_disk {
     initialize_params {

@@ -18,7 +18,7 @@ terraform {
 provider "google" {
   project = var.project_id
   region  = var.region
-  zone    = var.zone
+  zone    = local.zone
 
   # The billing budget API needs a quota project when run with user credentials.
   user_project_override = true

@@ -7,7 +7,7 @@ output "region" {
 }
 
 output "zone" {
-  value = var.zone
+  value = local.zone
 }
 
 output "vm_name" {
@@ -46,10 +46,10 @@ output "wif_provider_name" {
 }
 
 output "ssh_command" {
-  value = "gcloud compute ssh ${google_compute_instance.vm.name} --zone ${var.zone} --project ${var.project_id} --tunnel-through-iap"
+  value = "gcloud compute ssh ${google_compute_instance.vm.name} --zone ${local.zone} --project ${var.project_id} --tunnel-through-iap"
 }
 
 output "db_tunnel_command" {
   description = "Forwards local port 3306 to MariaDB on the VM"
-  value       = "gcloud compute ssh ${google_compute_instance.vm.name} --zone ${var.zone} --project ${var.project_id} --tunnel-through-iap -- -N -L 3306:127.0.0.1:3306"
+  value       = "gcloud compute ssh ${google_compute_instance.vm.name} --zone ${local.zone} --project ${var.project_id} --tunnel-through-iap -- -N -L 3306:127.0.0.1:3306"
 }

@@ -30,7 +30,7 @@ import {
 
 import {
   to = google_compute_instance.vm
-  id = "projects/${var.project_id}/zones/${var.zone}/instances/film-picker-vm"
+  id = "projects/${var.project_id}/zones/${local.zone}/instances/film-picker-vm"
 }
 
 import {
