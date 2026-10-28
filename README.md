@@ -4,7 +4,7 @@ Shared GCP infrastructure for the small apps in `home-experiment`: one VM, one n
 
 ## What this is
 
-Everything lives in one GCP project, `pytsekas` (region `us-central1`, zone `us-central1-a`). VM apps share one VM, `film-picker-vm`, an `e2-micro` by default. The GCP resource names still say `film-picker` because renaming them would recreate them.
+Everything lives in one GCP project, `pytsekas` (by default region `us-central1`, zone `us-central1-a`; the region can be moved, see "Moving to another region"). VM apps share one VM, `film-picker-vm`, an `e2-micro` by default. The GCP resource names still say `film-picker` because renaming them would recreate them.
 
 Shared by all apps:
 
@@ -14,7 +14,7 @@ Shared by all apps:
 - Caddy, which terminates HTTPS for every app host name
 - the releases bucket and the backups bucket (one folder per app)
 - the Workload Identity Federation (WIF) pool `github` and its provider `github`
-- the scripts `platform-sync`, `platform-deploy` and `platform-backup`
+- the scripts `platform-sync`, `platform-deploy`, `platform-backup` and `platform-restore`
 - the Terraform state bucket `pytsekas-film-picker-tfstate` (one prefix per root: `platform`, `film-picker`, `stash`, `pimik`)
 
 Per app, created by `modules/vm-app` from the app's own repository:
@@ -32,7 +32,7 @@ The WIF provider trusts only pushes to `main` from repositories of `github_owner
 - `live/`: the shared resources, applied by hand (network, VM, buckets, WIF, budget, `startup.sh`).
 - `modules/github-deployer/`: a deploy service account and its WIF binding for one repository.
 - `modules/vm-app/`: one app on the shared VM; uses `github-deployer`. Inputs: `name`, `github_repo`, `port`, `domains`, `db`, `health_path`, `platform`. Outputs: `deploy_service_account`, `secret_id`.
-- `scripts/`: `platform-common.sh`, `platform-sync.sh`, `platform-deploy.sh`, `platform-backup.sh` and their tests in `scripts/tests/`. `live/startup.sh` installs them on the VM.
+- `scripts/`: `platform-common.sh`, `platform-sync.sh`, `platform-deploy.sh`, `platform-backup.sh`, `platform-restore.sh` and their tests in `scripts/tests/`. `live/startup.sh` installs them on the VM.
 
 The header comment of each script lists its knobs. Read them there; this file does not repeat them.
 
@@ -47,7 +47,7 @@ terraform -chdir=live plan -out=live.tfplan
 terraform -chdir=live apply live.tfplan
 ```
 
-`billing_account_id` and `alert_email` are required. The optional variables are `budget_amount` (default 10), `machine_type` (default `e2-micro`), `github_owner` (default `home-experiment`) and `github_owner_id` (default `348538226`, the numeric id of `home-experiment`).
+`billing_account_id` and `alert_email` are required. The optional variables are `budget_amount` (default 10), `machine_type` (default `e2-micro`), `github_owner` (default `home-experiment`) and `github_owner_id` (default `348538226`, the numeric id of `home-experiment`), `region` (default `us-central1`), `zone` (defaults to `<region>-a`), `storage_location` (default `US-CENTRAL1`, the location of both buckets; changing it recreates them and deletes their objects) and `vm_deletion_protection` (default `true`; `false` only for the apply that moves or deletes the VM).
 
 After any change to `live/startup.sh` or `scripts/`, apply, then re-run the startup script on the VM. The apply only updates the VM's metadata; the VM picks the new scripts up when the startup script runs.
 
@@ -130,10 +130,14 @@ sudo platform-deploy --app <name> rollback    # point current at the previous re
 sudo platform-sync                            # re-apply the project metadata (users, Caddy, wrappers, firewall rules)
 sudo systemctl start platform-backup          # back up every app database now
 journalctl -u platform-backup                 # result of the last backups
+sudo platform-restore --app <name> latest     # load the newest backup into an empty app database
+sudo platform-restore --all latest            # the same for every app with a database
 sudo -u app-<name> pm2 status                 # one app's processes
 ```
 
 Backups are written to `gs://pytsekas-film-picker-backups/<name>/<name>-YYYY-MM-DD-HHMMSS.sql.gz`. A systemd timer runs `platform-backup` every night at 04:30 (Europe/Tallinn). One failing app does not stop the others; the unit then exits non-zero.
+
+`platform-restore` loads a backup into the app's own database: `latest` (the newest `<name>-YYYY-MM-DD-HHMMSS.sql.gz` in the app's folder) or a `gs://` URL of one backup in that folder. It refuses a database that already has tables unless `--force` is added. `--all latest` restores every app with a database, skips an app without backups and exits non-zero when any app failed.
 
 ### Isolation between apps
 
@@ -142,6 +146,23 @@ Backups are written to `gs://pytsekas-film-picker-backups/<name>/<name>-YYYY-MM-
 - No user with uid 1000 or above (apps, deploy accounts, people) can reach the GCP metadata server, which hands out the VM service account's credentials. Only DNS (port 53) stays open. `platform-sync` writes the nftables table to `/etc/nftables.d/platform.nft`, and `nftables.service` loads it at boot. Users of removed apps stay blocked.
 - Only root calls `gcloud`. `platform-deploy` downloads the release and the app's config secret into `/run/platform/<name>` (not readable by other apps) and hands them to the app user, then removes them.
 - An app that needs GCP APIs from the VM is not supported yet.
+
+## Moving to another region
+
+The VM, the subnet and the static IP are regional and are replaced; the buckets, the service accounts, WIF, the secrets and the apps' metadata keys stay. The database lives on the VM's boot disk, so it travels through the backups.
+
+1. Check the cost first: the `e2-micro` is only free in `us-west1`, `us-central1` and `us-east1`.
+2. On the VM: `sudo platform-backup`, then check that every app's dump landed: `gcloud storage ls gs://<backups bucket>/<name>/`.
+3. In `live/terraform.tfvars` set `region` (and `zone` only if `<region>-a` is not wanted) and `vm_deletion_protection = false`, then plan and apply. `live/imports.tf` must be gone by then. Expect the subnet, the static IP and the VM to be replaced and nothing else. On its first boot the startup script rebuilds the VM: users, databases (empty), Caddy and the units.
+4. Wait for the startup script to finish: on the VM (connect with the new `ssh_command` output) follow `sudo journalctl -u google-startup-scripts.service -f` until it reports that the script finished.
+5. `sudo platform-restore --all latest`.
+6. Re-apply each app's own Terraform root. The deploy account's SSH grants (`compute.osLogin`, IAP tunnel access) are bound to the VM, so they went with the old one; the module reads the new zone from the platform state.
+7. Set each app's GitHub variable `GCP_ZONE` to the new zone.
+8. Redeploy every app: re-run the last successful deploy job of its CI, or on the VM `sudo /usr/local/bin/deploy-<name> activate gs://<releases bucket>/<name>/<sha>.tar.gz` with its newest release.
+9. Point each app's DNS records at the new `static_ip` output. Caddy gets new certificates once DNS resolves.
+10. Set `vm_deletion_protection = true` again (or remove the line) and apply.
+
+The buckets stay at `storage_location`, so deploys and backups then cross regions (a small egress cost). Moving them is a separate step: changing `storage_location` recreates both buckets and deletes their objects, so copy the objects elsewhere first.
 
 ## Sizing
 
