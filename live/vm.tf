@@ -44,12 +44,13 @@ resource "google_compute_instance" "vm" {
   metadata = {
     enable-oslogin = "TRUE"
     startup-script = templatefile("${path.module}/startup.sh", {
-      releases_bucket = google_storage_bucket.bucket["releases"].name
-      backups_bucket  = google_storage_bucket.bucket["backups"].name
-      platform_common = file("${path.module}/../scripts/platform-common.sh")
-      platform_sync   = file("${path.module}/../scripts/platform-sync.sh")
-      platform_deploy = file("${path.module}/../scripts/platform-deploy.sh")
-      platform_backup = file("${path.module}/../scripts/platform-backup.sh")
+      releases_bucket  = google_storage_bucket.bucket["releases"].name
+      backups_bucket   = google_storage_bucket.bucket["backups"].name
+      platform_common  = file("${path.module}/../scripts/platform-common.sh")
+      platform_sync    = file("${path.module}/../scripts/platform-sync.sh")
+      platform_deploy  = file("${path.module}/../scripts/platform-deploy.sh")
+      platform_backup  = file("${path.module}/../scripts/platform-backup.sh")
+      platform_restore = file("${path.module}/../scripts/platform-restore.sh")
     })
   }
 

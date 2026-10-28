@@ -107,7 +107,10 @@ PLATFORM_SCRIPT
 install_file "$LIB/platform-backup.sh" 755 <<'PLATFORM_SCRIPT' || true
 ${platform_backup}
 PLATFORM_SCRIPT
-for script in sync deploy backup; do
+install_file "$LIB/platform-restore.sh" 755 <<'PLATFORM_SCRIPT' || true
+${platform_restore}
+PLATFORM_SCRIPT
+for script in sync deploy backup restore; do
   ln -sfn "$LIB/platform-$script.sh" "/usr/local/bin/platform-$script"
 done
 
