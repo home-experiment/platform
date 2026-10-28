@@ -47,12 +47,12 @@ terraform -chdir=live plan -out=live.tfplan
 terraform -chdir=live apply live.tfplan
 ```
 
-`billing_account_id` and `alert_email` are required. The optional variables are `budget_amount` (default 10), `machine_type` (default `e2-micro`), `github_owner` (default `home-experiment`) and `github_owner_id` (default `348538226`, the numeric id of `home-experiment`), `region` (default `us-central1`), `zone` (defaults to `<region>-a`), `storage_location` (default `US-CENTRAL1`, the location of both buckets; changing it recreates them and deletes their objects) and `vm_deletion_protection` (default `true`; `false` only for the apply that moves or deletes the VM).
+`billing_account_id` and `alert_email` are required. The optional variables are `budget_amount` (default 10), `machine_type` (default `e2-micro`), `github_owner` (default `home-experiment`), `github_owner_id` (default `348538226`, the numeric id of `home-experiment`), `region` (default `us-central1`), `zone` (defaults to `<region>-a`), `storage_location` (default `US-CENTRAL1`, the location of both buckets; changing it recreates them and deletes their objects) and `vm_deletion_protection` (default `true`; set it to `false` and apply before an apply that moves or deletes the VM).
 
 After any change to `live/startup.sh` or `scripts/`, apply, then re-run the startup script on the VM. The apply only updates the VM's metadata; the VM picks the new scripts up when the startup script runs.
 
 ```bash
-gcloud compute ssh film-picker-vm --zone us-central1-a --project pytsekas --tunnel-through-iap -- sudo google_metadata_script_runner startup
+gcloud compute ssh film-picker-vm --zone "$(terraform -chdir=live output -raw zone)" --project pytsekas --tunnel-through-iap -- sudo google_metadata_script_runner startup
 ```
 
 `terraform -chdir=live output` shows `static_ip`, `releases_bucket`, `backups_bucket`, `wif_provider_name`, `ssh_command` and `db_tunnel_command`.
@@ -96,7 +96,7 @@ App names are 2 to 23 characters: lowercase letters, digits and dashes, starting
    | Variable | Value |
    |----------|-------|
    | `GCP_PROJECT` | `pytsekas` |
-   | `GCP_ZONE` | `us-central1-a` |
+   | `GCP_ZONE` | platform output `zone` (`us-central1-a` by default) |
    | `GCP_WIF_PROVIDER` | platform output `wif_provider_name` |
    | `GCP_DEPLOY_SA` | app output `deploy_service_account` |
    | `GCP_RELEASES_BUCKET` | platform output `releases_bucket` |
@@ -137,7 +137,7 @@ sudo -u app-<name> pm2 status                 # one app's processes
 
 Backups are written to `gs://pytsekas-film-picker-backups/<name>/<name>-YYYY-MM-DD-HHMMSS.sql.gz`. A systemd timer runs `platform-backup` every night at 04:30 (Europe/Tallinn). One failing app does not stop the others; the unit then exits non-zero.
 
-`platform-restore` loads a backup into the app's own database: `latest` (the newest `<name>-YYYY-MM-DD-HHMMSS.sql.gz` in the app's folder) or a `gs://` URL of one backup in that folder. It refuses a database that already has tables unless `--force` is added. `--all latest` restores every app with a database, skips an app without backups and exits non-zero when any app failed.
+`platform-restore` loads a backup into the app's own database: `latest` (the newest `<name>-YYYY-MM-DD-HHMMSS.sql.gz` in the app's folder) or a `gs://` URL of one backup in that folder. It refuses a database that already has tables unless `--force` is added; `--force` loads over the existing tables, and tables not in the dump are left in place. A dump without mariadb-dump's closing `-- Dump completed` line is refused. When loading fails, the database may be partly loaded, so a rerun needs `--force`. `--all latest` restores every app with a database, skips an app without backups and exits non-zero when any app failed.
 
 ### Isolation between apps
 
@@ -153,14 +153,15 @@ The VM, the subnet and the static IP are regional and are replaced; the buckets,
 
 1. Check the cost first: the `e2-micro` is only free in `us-west1`, `us-central1` and `us-east1`.
 2. On the VM: `sudo platform-backup`, then check that every app's dump landed: `gcloud storage ls gs://<backups bucket>/<name>/`.
-3. In `live/terraform.tfvars` set `region` (and `zone` only if `<region>-a` is not wanted) and `vm_deletion_protection = false`, then plan and apply. `live/imports.tf` must be gone by then. Expect the subnet, the static IP and the VM to be replaced and nothing else. On its first boot the startup script rebuilds the VM: users, databases (empty), Caddy and the units.
-4. Wait for the startup script to finish: on the VM (connect with the new `ssh_command` output) follow `sudo journalctl -u google-startup-scripts.service -f` until it reports that the script finished.
-5. `sudo platform-restore --all latest`.
-6. Re-apply each app's own Terraform root. The deploy account's SSH grants (`compute.osLogin`, IAP tunnel access) are bound to the VM, so they went with the old one; the module reads the new zone from the platform state.
-7. Set each app's GitHub variable `GCP_ZONE` to the new zone.
-8. Redeploy every app: re-run the last successful deploy job of its CI, or on the VM `sudo /usr/local/bin/deploy-<name> activate gs://<releases bucket>/<name>/<sha>.tar.gz` with its newest release.
-9. Point each app's DNS records at the new `static_ip` output. Caddy gets new certificates once DNS resolves.
-10. Set `vm_deletion_protection = true` again (or remove the line) and apply.
+3. In `live/terraform.tfvars` set `vm_deletion_protection = false`, then plan and apply. This only updates the VM in place; the provider refuses to destroy a VM whose deletion protection is still on, so it cannot be combined with the next step.
+4. Delete `live/imports.tf` if it is still there. Set `region` (and `zone` only if `<region>-a` is not wanted), then plan and apply. Expect the subnet, the static IP and the VM to be replaced and nothing else. On its first boot the startup script rebuilds the VM: users, databases (empty), Caddy and the units.
+5. Wait for the startup script to finish: on the VM (connect with the new `ssh_command` output) follow `sudo journalctl -u google-startup-scripts.service -f` until it reports that the script finished.
+6. Point each app's DNS records at the new `static_ip` output. Caddy gets new certificates once DNS resolves, which can happen while the next steps run.
+7. `sudo platform-restore --all latest`.
+8. Re-apply each app's own Terraform root. The deploy account's SSH grants (`compute.osLogin`, IAP tunnel access) are bound to the VM, so they went with the old one; the module reads the new zone from the platform state.
+9. Set each app's GitHub variable `GCP_ZONE` to the new zone.
+10. Redeploy every app: re-run the last successful deploy job of its CI, or on the VM `sudo /usr/local/bin/deploy-<name> activate gs://<releases bucket>/<name>/<sha>.tar.gz` with its newest release.
+11. Set `vm_deletion_protection = true` again (or remove the line) and apply.
 
 The buckets stay at `storage_location`, so deploys and backups then cross regions (a small egress cost). Moving them is a separate step: changing `storage_location` recreates both buckets and deletes their objects, so copy the objects elsewhere first.
 

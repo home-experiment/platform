@@ -23,7 +23,7 @@ variable "storage_location" {
 }
 
 variable "vm_deletion_protection" {
-  description = "Set to false only for the apply that moves or deletes the VM"
+  description = "Set to false and apply before an apply that moves or deletes the VM (the provider refuses to destroy a protected VM); set back to true afterwards"
   type        = bool
   default     = true
 }
