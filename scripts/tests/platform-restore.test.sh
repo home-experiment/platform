@@ -67,13 +67,15 @@ teardown(){
 
 run_restore(){ bash "$SCRIPTS/platform-restore.sh" "$@" > "$WORK/out.log" 2>&1; }
 
-# put <app> <file> <content>: stores a gzipped object in the fake bucket.
+# put <app> <file> <content>: stores a gzipped dump with mariadb-dump's closing
+# line in the fake bucket.
 put(){
   mkdir -p "$BUCKET/$1"
-  echo "$3" | gzip > "$BUCKET/$1/$2"
+  printf '%s\n-- Dump completed on 2026-10-01  4:30:00\n' "$3" | gzip > "$BUCKET/$1/$2"
 }
 
-loaded(){ cat "$LOADED/$1" 2>/dev/null || true; }
+# loaded <db>: the first line loaded into the database (the content given to put).
+loaded(){ head -n 1 "$LOADED/$1" 2>/dev/null || true; }
 
 test_latest_picks_newest_matching(){
   put demo demo-2026-10-01-043000.sql.gz "-- old"
@@ -103,7 +105,9 @@ test_url_rejected(){
     gs://elsewhere/demo/demo-2026-10-01-043000.sql.gz \
     gs://bak/demo/demo-2026-10-01.sql.gz \
     gs://bak/demo/sub/demo-2026-10-01-043000.sql.gz \
-    gs://bak/demo/demo-2026-10-01-043000.sql.gz.tmp; do
+    gs://bak/demo/demo-2026-10-01-043000.sql.gz.tmp \
+    $'gs://bak/demo/demo-2026-10-01-043000.sql.gz\nx' \
+    'gs://bak/demo/demo-2026-10-0*-043000.sql.gz'; do
     if run_restore --app demo "$url"; then fail "accepted $url"; fi
     grep -q "not a backup of demo" "$WORK/out.log" || fail "no message for $url"
   done
@@ -133,6 +137,7 @@ test_unknown_app(){
   if run_restore --app nodb latest; then fail "app without a database accepted"; fi
   grep -q "nodb has no database" "$WORK/out.log" || fail "no message for app without db"
   if run_restore --app 'Bad!' latest; then fail "bad app name accepted"; fi
+  grep -q "bad app name: 'Bad!'" "$WORK/out.log" || fail "no message for bad app name"
 }
 
 test_bad_dump_fails(){
@@ -141,6 +146,28 @@ test_bad_dump_fails(){
   if run_restore --app demo latest; then fail "corrupt dump accepted"; fi
   assert_eq "$(loaded demo_db)" "" "corrupt dump loaded"
   assert_eq "$(ls -A "$BACKUP_TMP_DIR")" "" "temp file left behind after failure"
+}
+
+test_truncated_dump_fails(){
+  mkdir -p "$BUCKET/demo"
+  printf -- '-- dump\nINSERT INTO t VALUES (1);\n' | gzip > "$BUCKET/demo/demo-2026-10-01-043000.sql.gz"
+  if run_restore --app demo latest; then fail "dump without the completion line accepted"; fi
+  grep -q "not a complete mariadb-dump" "$WORK/out.log" || fail "no message: $(cat "$WORK/out.log")"
+  assert_eq "$(loaded demo_db)" "" "truncated dump loaded"
+}
+
+test_load_failure_says_force(){
+  put demo demo-2026-10-01-043000.sql.gz "-- dump"
+  export MARIADB_BAD=demo_db
+  if run_restore --app demo latest; then fail "failed load reported success"; fi
+  grep -q "demo_db may be partly loaded, so a rerun needs --force" "$WORK/out.log" || fail "no --force hint: $(cat "$WORK/out.log")"
+}
+
+test_login_file_reaches_load(){
+  put demo demo-2026-10-01-043000.sql.gz "-- dump"
+  touch "$MYSQL_DEFAULTS"
+  run_restore --app demo latest || fail "restore exited non-zero: $(cat "$WORK/out.log")"
+  grep -qx "mariadb --defaults-extra-file=$MYSQL_DEFAULTS demo_db" "$STUB_LOG" || fail "load without the login file: $(cat "$STUB_LOG")"
 }
 
 test_all_skips_and_reports(){

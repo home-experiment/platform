@@ -9,11 +9,15 @@
 #   platform-restore --help                  this text
 #   add --force to restore into a database that already has tables
 #
-# A database that already has tables is left alone unless --force is given. The
-# dump is downloaded and checked before anything is written; it holds no CREATE
+# A database that already has tables is left alone unless --force is given;
+# --force loads over the existing tables, and tables not in the dump are left in
+# place. The dump is downloaded and checked (it must end with mariadb-dump's
+# "-- Dump completed" line) before anything is written; it holds no CREATE
 # DATABASE or USE (platform-backup dumps one database), so it is loaded into
-# the app's own database from its metadata. --all goes on past an app that
-# fails, skips an app without backups and exits non-zero when any app failed.
+# the app's own database from its metadata. A failed load may leave the
+# database partly loaded; a rerun then needs --force. --all goes on past an app
+# that fails, skips an app without backups and exits non-zero when any app
+# failed.
 #
 # Knobs (environment): BACKUP_TMP_DIR (where the dump is downloaded, default
 # /var/tmp), plus those of platform-common.sh.
@@ -114,11 +118,11 @@ restore_app(){
   if ! gcloud storage cp "$url" "$DUMP"; then
     warn "cannot download $url"
     rc=1
-  elif ! gzip -t "$DUMP"; then
-    warn "$url is not a valid gzip file"
+  elif ! gunzip -c "$DUMP" | tail -n 1 | grep -q '^-- Dump completed'; then
+    warn "$url is not a complete mariadb-dump (bad gzip or no '-- Dump completed' line)"
     rc=1
   elif ! gunzip -c "$DUMP" | mariadb_cmd mariadb "$db"; then
-    warn "loading $url into $db failed"
+    warn "loading $url into $db failed; $db may be partly loaded, so a rerun needs --force"
     rc=1
   fi
   rm -f "$DUMP"
