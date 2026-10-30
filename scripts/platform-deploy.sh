@@ -25,7 +25,7 @@
 # it rolls back to the previous release.
 #
 # Knobs (environment): SRV_DIR (/srv), HOME_BASE (/home), STAGING_DIR
-# (/run/platform), KEEP_RELEASES (5), HEALTH_TIMEOUT seconds (30),
+# (/var/lib/platform/staging), KEEP_RELEASES (5), HEALTH_TIMEOUT seconds (30),
 # HEALTH_INTERVAL seconds (2), PLATFORM_SYNC (the sync script), and those of
 # platform-common.sh.
 set -euo pipefail
@@ -36,7 +36,9 @@ LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
 SRV_DIR="${SRV_DIR:-/srv}"
 HOME_BASE="${HOME_BASE:-/home}"
-STAGING_DIR="${STAGING_DIR:-/run/platform}"
+# On the root disk: /run is a tmpfs of a tenth of the RAM (97 MB on a 1 GB VM)
+# and a Node release tarball is bigger than that.
+STAGING_DIR="${STAGING_DIR:-/var/lib/platform/staging}"
 KEEP_RELEASES="${KEEP_RELEASES:-5}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-30}"
 HEALTH_INTERVAL="${HEALTH_INTERVAL:-2}"
