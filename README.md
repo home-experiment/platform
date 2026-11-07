@@ -31,7 +31,7 @@ The WIF provider trusts only pushes to `main` from repositories of `github_owner
 
 - `live/`: the shared resources, applied by hand (network, VM, buckets, WIF, budget, `startup.sh`).
 - `modules/github-deployer/`: a deploy service account and its WIF binding for one repository.
-- `modules/vm-app/`: one app on the shared VM; uses `github-deployer`. Inputs: `name`, `github_repo`, `port`, `domains`, `db`, `health_path`, `platform`. Outputs: `deploy_service_account`, `secret_id`.
+- `modules/vm-app/`: one app on the shared VM; uses `github-deployer`. Inputs: `name`, `github_repo`, `port`, `domains`, `db`, `inbox_bucket` (optional GCS bucket whose files are copied to the VM), `health_path`, `platform`. Outputs: `deploy_service_account`, `secret_id`.
 - `scripts/`: `platform-common.sh`, `platform-sync.sh`, `platform-deploy.sh`, `platform-backup.sh`, `platform-restore.sh` and their tests in `scripts/tests/`. `live/startup.sh` installs them on the VM.
 
 The header comment of each script lists its knobs. Read them there; this file does not repeat them.
