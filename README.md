@@ -14,7 +14,7 @@ Shared by all apps:
 - Caddy, which terminates HTTPS for every app host name
 - the releases bucket and the backups bucket (one folder per app)
 - the Workload Identity Federation (WIF) pool `github` and its provider `github`
-- the scripts `platform-sync`, `platform-deploy`, `platform-backup` and `platform-restore`
+- the scripts `platform-sync`, `platform-deploy`, `platform-backup`, `platform-restore` and `platform-inbox` (timers for backup and inbox)
 - the Terraform state bucket `pytsekas-film-picker-tfstate` (one prefix per root: `platform`, `film-picker`, `stash`, `pimik`)
 
 Per app, created by `modules/vm-app` from the app's own repository:
@@ -32,7 +32,7 @@ The WIF provider trusts only pushes to `main` from repositories of `github_owner
 - `live/`: the shared resources, applied by hand (network, VM, buckets, WIF, budget, `startup.sh`).
 - `modules/github-deployer/`: a deploy service account and its WIF binding for one repository.
 - `modules/vm-app/`: one app on the shared VM; uses `github-deployer`. Inputs: `name`, `github_repo`, `port`, `domains`, `db`, `inbox_bucket` (optional GCS bucket whose files are copied to the VM), `health_path`, `platform`. Outputs: `deploy_service_account`, `secret_id`.
-- `scripts/`: `platform-common.sh`, `platform-sync.sh`, `platform-deploy.sh`, `platform-backup.sh`, `platform-restore.sh` and their tests in `scripts/tests/`. `live/startup.sh` installs them on the VM.
+- `scripts/`: `platform-common.sh`, `platform-sync.sh`, `platform-deploy.sh`, `platform-backup.sh`, `platform-restore.sh`, `platform-inbox.sh` and their tests in `scripts/tests/`. `live/startup.sh` installs them on the VM.
 
 The header comment of each script lists its knobs. Read them there; this file does not repeat them.
 
@@ -132,10 +132,14 @@ sudo systemctl start platform-backup          # back up every app database now
 journalctl -u platform-backup                 # result of the last backups
 sudo platform-restore --app <name> latest     # load the newest backup into an empty app database
 sudo platform-restore --all latest            # the same for every app with a database
+sudo systemctl start platform-inbox           # copy the apps' inbox buckets now
+journalctl -u platform-inbox                  # result of the last inbox copy
 sudo -u app-<name> pm2 status                 # one app's processes
 ```
 
 Backups are written to `gs://pytsekas-film-picker-backups/<name>/<name>-YYYY-MM-DD-HHMMSS.sql.gz`. A systemd timer runs `platform-backup` every night at 04:30 (Europe/Tallinn). One failing app does not stop the others; the unit then exits non-zero.
+
+**Inbox.** An app that sets the module input `inbox_bucket` gets that bucket copied to the VM every 5 minutes (`platform-inbox`, systemd timer `*:0/5`) into `/var/lib/platform/inbox/<name>/`. Only objects at the top level of the bucket are copied, and files that leave the bucket are removed. The directory belongs to root with group `app-<name>` (mode 750, files 640), so only that app can read it and the app cannot change or delete anything there. Files are copied into root-only staging first and published by rename, so the app never sees a partial file. Removing `inbox_bucket` deletes the app's inbox on the next run. One failing app does not stop the others.
 
 `platform-restore` loads a backup into the app's own database: `latest` (the newest `<name>-YYYY-MM-DD-HHMMSS.sql.gz` in the app's folder) or a `gs://` URL of one backup in that folder. It refuses a database that already has tables unless `--force` is added; `--force` loads over the existing tables, and tables not in the dump are left in place. A dump without mariadb-dump's closing `-- Dump completed` line is refused. When loading fails, the database may be partly loaded, so a rerun needs `--force`. `--all latest` restores every app with a database, skips an app without backups and exits non-zero when any app failed.
 

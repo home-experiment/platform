@@ -110,6 +110,9 @@ PLATFORM_SCRIPT
 install_file "$LIB/platform-restore.sh" 755 <<'PLATFORM_SCRIPT' || true
 ${platform_restore}
 PLATFORM_SCRIPT
+install_file "$LIB/platform-inbox.sh" 755 <<'PLATFORM_SCRIPT' || true
+${platform_inbox}
+PLATFORM_SCRIPT
 for script in sync deploy backup restore; do
   ln -sfn "$LIB/platform-$script.sh" "/usr/local/bin/platform-$script"
 done
@@ -156,6 +159,31 @@ WantedBy=timers.target
 EOF
 systemctl daemon-reload
 systemctl enable --now platform-backup.timer
+
+# Every 5 minutes: copy each app's inbox bucket to /var/lib/platform/inbox/<name>.
+install_file /etc/systemd/system/platform-inbox.service 644 <<'EOF' || true
+[Unit]
+Description=Copy every app's inbox bucket to the VM
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/platform/platform-inbox.sh
+# A hung copy must not block the timer forever.
+TimeoutStartSec=5min
+EOF
+install_file /etc/systemd/system/platform-inbox.timer 644 <<'EOF' || true
+[Unit]
+Description=Copy app inbox buckets every 5 minutes
+
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+systemctl daemon-reload
+systemctl enable --now platform-inbox.timer
 
 # Apps: directories, databases, Caddy sites, deploy wrappers and sudoers rules.
 "$LIB/platform-sync.sh" || echo "platform-sync reported problems; see above" >&2

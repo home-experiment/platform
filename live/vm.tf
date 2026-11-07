@@ -51,6 +51,7 @@ resource "google_compute_instance" "vm" {
       platform_deploy  = file("${path.module}/../scripts/platform-deploy.sh")
       platform_backup  = file("${path.module}/../scripts/platform-backup.sh")
       platform_restore = file("${path.module}/../scripts/platform-restore.sh")
+      platform_inbox   = file("${path.module}/../scripts/platform-inbox.sh")
     })
   }
 
