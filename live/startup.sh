@@ -164,10 +164,17 @@ systemctl enable --now platform-backup.timer
 install_file /etc/systemd/system/platform-inbox.service 644 <<'EOF' || true
 [Unit]
 Description=Copy every app's inbox bucket to the VM
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=oneshot
 ExecStart=/usr/local/lib/platform/platform-inbox.sh
+# Small VM: run gently.
+Nice=10
+IOSchedulingClass=idle
+Environment=CLOUDSDK_STORAGE_PROCESS_COUNT=1
+Environment=CLOUDSDK_STORAGE_THREAD_COUNT=2
 # A hung copy must not block the timer forever.
 TimeoutStartSec=5min
 EOF
