@@ -77,11 +77,12 @@ resource "google_compute_project_metadata_item" "app" {
   project = var.platform.project_id
   key     = "vm-app-${var.name}"
   value = jsonencode({
-    name        = var.name
-    port        = var.port
-    domains     = var.domains
-    db          = var.db
-    health_path = var.health_path
-    deploy_user = "sa_${module.deployer.unique_id}"
+    name         = var.name
+    port         = var.port
+    domains      = var.domains
+    db           = var.db
+    inbox_bucket = var.inbox_bucket
+    health_path  = var.health_path
+    deploy_user  = "sa_${module.deployer.unique_id}"
   })
 }

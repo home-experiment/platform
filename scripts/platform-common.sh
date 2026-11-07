@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Shared by platform-sync.sh, platform-deploy.sh, platform-backup.sh and
-# platform-restore.sh; sourced, never run. Reads /etc/platform/platform.conf and
-# the vm-app-<name> project metadata keys that the vm-app Terraform module
-# writes, and validates them.
+# Shared by platform-sync.sh, platform-deploy.sh, platform-backup.sh,
+# platform-restore.sh and platform-inbox.sh; sourced, never run. Reads
+# /etc/platform/platform.conf and the vm-app-<name> project metadata keys that
+# the vm-app Terraform module writes, and validates them.
 #
 # Knobs (environment): PLATFORM_CONF (default /etc/platform/platform.conf),
 # PLATFORM_METADATA_FILE (a JSON file read instead of the metadata server, for
@@ -14,6 +14,7 @@ METADATA_URL="http://metadata.google.internal/computeMetadata/v1/project/attribu
 # 2-23 characters, as in Terraform, so app-<name> fits the 32-character user name limit.
 APP_NAME_RE='^[a-z][a-z0-9-]{1,22}$'
 DB_NAME_RE='^[a-z][a-z0-9_]{1,63}$'
+BUCKET_NAME_RE='^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$'
 PORT_RE='^[1-9][0-9]{3,4}$'
 DEPLOY_USER_RE='^sa_[0-9]{1,40}$'
 DOMAIN_RE='^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
@@ -63,7 +64,7 @@ present_apps(){
 # check_app <key> <value>: prints the app as normalised JSON when the value is
 # valid; otherwise says why on stderr and returns 1.
 check_app(){
-  local key="$1" app name port db user health
+  local key="$1" app name port db bucket user health
   app="$(jq -cn --arg v "$2" '$v | fromjson? | select(type == "object")')"
   if [ -z "$app" ]; then
     warn "$key: the value is not a JSON object"
@@ -72,6 +73,7 @@ check_app(){
   name="$(jq -r '.name // "" | tostring' <<<"$app")"
   port="$(jq -r '.port // "" | tostring' <<<"$app")"
   db="$(jq -r '.db // "" | tostring' <<<"$app")"
+  bucket="$(jq -r '.inbox_bucket // "" | tostring' <<<"$app")"
   user="$(jq -r '.deploy_user // "" | tostring' <<<"$app")"
   health="$(jq -r '.health_path // "/" | tostring' <<<"$app")"
   if ! [[ "$name" =~ $APP_NAME_RE ]]; then warn "$key: bad name '$name'"; return 1; fi
@@ -81,6 +83,7 @@ check_app(){
     return 1
   fi
   if [ -n "$db" ] && ! [[ "$db" =~ $DB_NAME_RE ]]; then warn "$key: bad db '$db'"; return 1; fi
+  if [ -n "$bucket" ] && ! [[ "$bucket" =~ $BUCKET_NAME_RE ]]; then warn "$key: bad inbox_bucket '$bucket'"; return 1; fi
   if ! [[ "$user" =~ $DEPLOY_USER_RE ]]; then warn "$key: bad deploy_user '$user'"; return 1; fi
   if ! [[ "$health" =~ $HEALTH_PATH_RE ]]; then warn "$key: bad health_path '$health'"; return 1; fi
   if ! jq -e '.domains | type == "array" and length > 0 and all(type == "string")' <<<"$app" >/dev/null; then
@@ -95,8 +98,8 @@ check_app(){
     return 1
   fi
   jq -cn --arg name "$name" --argjson port "$port" --argjson domains "$(jq -c .domains <<<"$app")" \
-    --arg db "$db" --arg health "$health" --arg user "$user" \
-    '{name: $name, port: $port, domains: $domains, db: $db, health_path: $health, deploy_user: $user}'
+    --arg db "$db" --arg bucket "$bucket" --arg health "$health" --arg user "$user" \
+    '{name: $name, port: $port, domains: $domains, db: $db, inbox_bucket: $bucket, health_path: $health, deploy_user: $user}'
 }
 
 # valid_apps: the valid apps as normalised JSON, one per line, sorted by name.

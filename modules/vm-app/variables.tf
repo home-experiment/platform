@@ -40,6 +40,16 @@ variable "db" {
   }
 }
 
+variable "inbox_bucket" {
+  description = "GCS bucket whose top-level files platform-inbox copies to the VM for the app; null for none. The app's own Terraform must grant roles/storage.objectViewer on the bucket to the platform VM service account, otherwise every run fails with a 403"
+  type        = string
+  default     = null
+  validation {
+    condition     = var.inbox_bucket == null ? true : can(regex("^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$", var.inbox_bucket))
+    error_message = "inbox_bucket: a bucket name of 3-63 lowercase letters, digits, dots, hyphens and underscores, starting and ending with a letter or digit."
+  }
+}
+
 variable "health_path" {
   description = "Path the deploy health check requests on the app's port"
   type        = string

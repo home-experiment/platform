@@ -82,6 +82,23 @@ test_null_db(){
   assert_eq "$(jq -r .db <<<"$(one_app demo)")" "" "null db"
 }
 
+test_inbox_bucket(){
+  metadata \
+    "vm-app-nobucket=$(app_value nobucket 4100)" \
+    "vm-app-nullbucket=$(app_value nullbucket 4101 '.inbox_bucket = null')" \
+    "vm-app-okbucket=$(app_value okbucket 4102 '.inbox_bucket = "pytsekas-film-picker-scans"')" \
+    "vm-app-badbucket=$(app_value badbucket 4103 '.inbox_bucket = "Bad_Bucket!"')" \
+    "vm-app-numbucket=$(app_value numbucket 4104 '.inbox_bucket = 5')"
+  assert_eq "$(names)" "nobucket nullbucket okbucket" "apps with a valid or absent inbox_bucket"
+  local key
+  for key in vm-app-badbucket vm-app-numbucket; do
+    grep -q "$key: bad inbox_bucket" "$WORK/err.log" || fail "no inbox_bucket warning for $key"
+  done
+  assert_eq "$(jq -r .inbox_bucket <<<"$(one_app nobucket)")" "" "absent inbox_bucket"
+  assert_eq "$(jq -r .inbox_bucket <<<"$(one_app nullbucket)")" "" "null inbox_bucket"
+  assert_eq "$(jq -r .inbox_bucket <<<"$(one_app okbucket)")" "pytsekas-film-picker-scans" "inbox_bucket"
+}
+
 test_unknown_app(){
   metadata "vm-app-demo=$(app_value demo 4100)"
   assert_eq "$(one_app ghost)" "" "unknown app"
