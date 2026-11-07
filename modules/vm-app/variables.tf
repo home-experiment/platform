@@ -41,7 +41,7 @@ variable "db" {
 }
 
 variable "inbox_bucket" {
-  description = "GCS bucket whose top-level files platform-inbox copies to the VM for the app; null for none. The app's own Terraform must grant roles/storage.objectViewer on the bucket to the platform VM service account, otherwise every run fails with a 403"
+  description = "GCS bucket whose top-level files platform-inbox copies to the VM for the app; null for none. The app's own Terraform must grant roles/storage.objectViewer and roles/storage.legacyBucketReader (gcloud storage rsync needs storage.buckets.get) on the bucket to the platform VM service account, otherwise every run fails with a 403"
   type        = string
   default     = null
   validation {
