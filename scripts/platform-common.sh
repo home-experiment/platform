@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Shared by platform-sync.sh, platform-deploy.sh, platform-backup.sh and
-# platform-restore.sh; sourced, never run. Reads /etc/platform/platform.conf and
-# the vm-app-<name> project metadata keys that the vm-app Terraform module
-# writes, and validates them.
+# Shared by platform-sync.sh, platform-deploy.sh, platform-backup.sh,
+# platform-restore.sh and platform-inbox.sh; sourced, never run. Reads
+# /etc/platform/platform.conf and the vm-app-<name> project metadata keys that
+# the vm-app Terraform module writes, and validates them.
 #
 # Knobs (environment): PLATFORM_CONF (default /etc/platform/platform.conf),
 # PLATFORM_METADATA_FILE (a JSON file read instead of the metadata server, for
