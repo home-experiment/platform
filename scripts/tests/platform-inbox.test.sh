@@ -94,7 +94,7 @@ test_new_object(){
   assert_eq "$(mode "$INBOX_DIR/film-picker/a.csv")" "640" "file mode"
   assert_eq "$(mode "$INBOX_DIR/film-picker")" "750" "inbox dir mode"
   assert_eq "$(mode "$INBOX_STAGING_DIR/film-picker")" "700" "staging dir mode"
-  grep -q "^install -m 640 -o root -g app-film-picker $INBOX_STAGING_DIR/film-picker/a.csv $INBOX_DIR/film-picker/.tmp.a.csv$" "$STUB_LOG" \
+  grep -q "^install -m 640 -o root -g app-film-picker $INBOX_STAGING_DIR/film-picker/a.csv $INBOX_DIR/film-picker/.tmp.a.csv.part$" "$STUB_LOG" \
     || fail "install not called with the app group via a temp name: $(grep '^install' "$STUB_LOG")"
   grep -q "^chown root:app-film-picker $INBOX_DIR/film-picker$" "$STUB_LOG" || fail "inbox dir not chowned to root:app-film-picker"
   grep -q "^gcloud storage rsync --delete-unmatched-destination-objects gs://fp-inbox $INBOX_STAGING_DIR/film-picker$" "$STUB_LOG" \
@@ -147,7 +147,7 @@ test_rsync_failure(){
   assert_eq "$(cat "$INBOX_DIR/film-picker/a.csv")" "one" "inbox changed after a failed rsync"
   [ ! -e "$INBOX_DIR/film-picker/c.csv" ] || fail "file published after a failed rsync"
   assert_eq "$(cat "$INBOX_DIR/other/o.csv" 2>/dev/null)" "other" "other app not processed"
-  grep -qi "warning:.*film-picker" "$WORK/out.log" || fail "no warning for the failed app: $(cat "$WORK/out.log")"
+  assert_eq "$(grep -c "^warning:.*film-picker" "$WORK/out.log")" "1" "warnings for the failed app"
 }
 
 test_inbox_symlink_replaced(){
@@ -176,11 +176,11 @@ test_symlinked_entry_replaced(){
   mkdir -p "$INBOX_DIR/film-picker"
   printf 'one' > "$WORK/outside"
   ln -s "$WORK/outside" "$INBOX_DIR/film-picker/a.csv"
-  ln -s "$WORK/outside" "$INBOX_DIR/film-picker/.tmp.a.csv"
+  ln -s "$WORK/outside" "$INBOX_DIR/film-picker/.tmp.a.csv.part"
   run_inbox || fail "inbox exited non-zero: $(cat "$WORK/out.log")"
   [ ! -L "$INBOX_DIR/film-picker/a.csv" ] && [ -f "$INBOX_DIR/film-picker/a.csv" ] || fail "symlinked entry not replaced"
   assert_eq "$(cat "$WORK/outside")" "one" "symlink target written"
-  [ ! -e "$INBOX_DIR/film-picker/.tmp.a.csv" ] && [ ! -L "$INBOX_DIR/film-picker/.tmp.a.csv" ] || fail "stale temp entry left"
+  [ ! -e "$INBOX_DIR/film-picker/.tmp.a.csv.part" ] && [ ! -L "$INBOX_DIR/film-picker/.tmp.a.csv.part" ] || fail "stale temp entry left"
 }
 
 test_nested_object_ignored(){
@@ -198,6 +198,14 @@ test_reserved_temp_name_skipped(){
   run_inbox || fail "inbox exited non-zero: $(cat "$WORK/out.log")"
   assert_eq "$(cat "$INBOX_DIR/film-picker/a.csv")" "one" "published content"
   [ ! -e "$INBOX_DIR/film-picker/.tmp.a.csv" ] || fail "reserved temp name published"
+}
+
+test_gcloud_temp_skipped(){
+  put fp-inbox/a.csv "one"
+  put fp-inbox/b.csv_.gstmp "partial"
+  run_inbox || fail "inbox exited non-zero: $(cat "$WORK/out.log")"
+  [ -f "$INBOX_DIR/film-picker/a.csv" ] || fail "top-level object missing"
+  [ ! -e "$INBOX_DIR/film-picker/b.csv_.gstmp" ] || fail "gcloud download temp published"
 }
 
 test_gone_apps_cleaned(){

@@ -3,8 +3,10 @@
 # app with inbox_bucket: gcloud storage rsync mirrors gs://<bucket> into
 # INBOX_STAGING_DIR/<name> (root only, 700), then every staged file that is new
 # or changed is published into INBOX_DIR/<name> (root:app-<name>, 750; files
-# root:app-<name>, 640) under a temporary name and renamed into place, so the
-# app never reads a half-written file; files that left the bucket are removed.
+# root:app-<name>, 640) as .tmp.<file>.part and renamed into place, so the app
+# never reads a half-written file (nor one with the final extension); files that
+# left the bucket are removed. Staged gcloud download temps (*.gstmp) and objects
+# named .tmp.* are never published.
 # A failed rsync leaves the published inbox as it was. Inbox and staging
 # directories of apps that are gone or have no inbox_bucket are deleted; an
 # invalid app keeps what it had. Run as root by platform-inbox.service (timer,
@@ -29,6 +31,7 @@ LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 INBOX_DIR="${INBOX_DIR:-/var/lib/platform/inbox}"
 INBOX_STAGING_DIR="${INBOX_STAGING_DIR:-/var/lib/platform/inbox-staging}"
 TMP_PREFIX=".tmp."
+TMP_SUFFIX=".part"
 
 # real_dir <path> <owner:group> <mode>: makes <path> a real directory with that
 # owner and mode; a symlink or file in its place is removed, not followed.
@@ -56,12 +59,13 @@ publish(){
   for src in "$staging"/*; do
     regular "$src" || continue
     file="${src##*/}"
+    [[ "$file" == *.gstmp ]] && continue
     if [[ "$file" == "$TMP_PREFIX"* ]]; then
       warn "$name: skipping $file (names starting with $TMP_PREFIX are reserved)"
       continue
     fi
     dst="$inbox/$file"
-    tmp="$inbox/$TMP_PREFIX$file"
+    tmp="$inbox/$TMP_PREFIX$file$TMP_SUFFIX"
     if regular "$dst"; then
       cmp -s "$src" "$dst" && continue
       updated=$((updated + 1))
@@ -79,7 +83,7 @@ publish(){
     file="${entry##*/}"
     if [[ "$file" == "$TMP_PREFIX"* ]]; then
       rm -rf "$entry" || return 1
-    elif ! regular "$staging/$file"; then
+    elif [[ "$file" == *.gstmp ]] || ! regular "$staging/$file"; then
       rm -rf "$entry" || return 1
       removed=$((removed + 1))
     fi
@@ -88,16 +92,26 @@ publish(){
 }
 
 # sync_inbox <name> <bucket>: mirrors the bucket into staging, then publishes.
+# Prints exactly one warning when it fails.
 sync_inbox(){
   local name="$1" bucket="$2"
   local staging="$INBOX_STAGING_DIR/$name" inbox="$INBOX_DIR/$name"
-  real_dir "$staging" root:root 700 || return 1
+  if ! real_dir "$staging" root:root 700; then
+    warn "$name: cannot prepare $staging"
+    return 1
+  fi
   if ! gcloud storage rsync --delete-unmatched-destination-objects "gs://$bucket" "$staging"; then
     warn "$name: copying gs://$bucket failed; the inbox is unchanged"
     return 1
   fi
-  real_dir "$inbox" "root:$(app_user "$name")" 750 || return 1
-  publish "$name" "$staging" "$inbox"
+  if ! real_dir "$inbox" "root:$(app_user "$name")" 750; then
+    warn "$name: cannot prepare $inbox"
+    return 1
+  fi
+  if ! publish "$name" "$staging" "$inbox"; then
+    warn "$name: publishing into $inbox failed"
+    return 1
+  fi
 }
 
 # remove_unused <keep names> <base dir>: deletes the entries of <base dir> whose
@@ -107,7 +121,7 @@ remove_unused(){
   for entry in "$base"/*; do
     name="${entry##*/}"
     grep -qxF -- "$name" <<<"$keep" && continue
-    log "Removing $entry (no inbox_bucket for $name)"
+    log "Removing $entry (app gone or has no inbox_bucket)"
     rm -rf "$entry" || return 1
   done
 }
@@ -131,10 +145,7 @@ main(){
       keep="$(grep -vxF -- "$name" <<<"$keep" || true)"
       continue
     fi
-    if ! sync_inbox "$name" "$bucket"; then
-      warn "inbox of $name failed"
-      failed=1
-    fi
+    sync_inbox "$name" "$bucket" || failed=1
   done <<<"$apps"
   remove_unused "$keep" "$INBOX_DIR" || failed=1
   remove_unused "$keep" "$INBOX_STAGING_DIR" || failed=1
