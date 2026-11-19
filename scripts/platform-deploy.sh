@@ -189,10 +189,14 @@ switch_current(){
 }
 
 # The ecosystem file resolves cwd from its real path, so a plain restart would
-# keep the old release; delete and start picks up the new one. Deleting by the
-# app's PM2 namespace also stops processes the new release no longer declares.
+# keep the old release; delete and start picks up the new one. "all" is this
+# app's whole process list, because every app runs its own PM2 daemon as its
+# own user; it also stops processes the new release no longer declares. Not
+# "pm2 delete $APP": pm2 matches that against process names before namespaces,
+# so an app with a process named like itself (stash) kept its other processes,
+# and they restarted in the old release's directory.
 restart(){
-  pm2 delete "$APP" >/dev/null 2>&1 || true
+  pm2 delete all >/dev/null 2>&1 || true
   pm2 start "$CURRENT/ecosystem.config.cjs" || return 1
   pm2 save || return 1
 }
