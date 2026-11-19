@@ -108,6 +108,23 @@ stage(){
   fi
 }
 
+# ensure_pm2_unit <user>: the app's PM2 daemon must run in its systemd unit
+# (pm2-<user>.service, written by platform-sync.sh). Any pm2 command spawns a
+# daemon when none is running, and one spawned by the app phase lives in the
+# deploy's SSH session: systemd kills it with all the apps when that session is
+# torn down (film-picker, 2026-11-16). A daemon outside the unit makes the unit
+# fail to start ("Can't open PID file"), so it is stopped first; the unit then
+# spawns a daemon and resurrects the saved process list, which the app phase
+# restarts.
+ensure_pm2_unit(){
+  local user="$1" unit="pm2-$1.service"
+  ! systemctl is-active --quiet "$unit" || return 0
+  log "$unit is not active; moving $user's PM2 daemon under systemd"
+  runuser -u "$user" -- env HOME="$HOME_BASE/$user" pm2 kill >/dev/null 2>&1 || true
+  systemctl start "$unit" \
+    || warn "could not start $unit; PM2 will run outside systemd and stop with this session"
+}
+
 # as_root: sync the VM, stage what the app user cannot fetch, then continue as
 # the app user.
 # The app's metadata goes along to the app phase because the app user cannot
@@ -122,6 +139,12 @@ as_root(){
   cd /
   "$PLATFORM_SYNC" || warn "platform-sync reported problems (see above); continuing"
   user="$(app_user "$APP")"
+  if [ "$CMD" = status ]; then
+    systemctl is-active --quiet "pm2-$user.service" \
+      || warn "pm2-$user.service is not active: PM2 is not running under systemd"
+  else
+    ensure_pm2_unit "$user"
+  fi
   app_phase=(runuser -u "$user" -- env HOME="$HOME_BASE/$user" PLATFORM_SWITCHED=1
     PLATFORM_APP_JSON="$APP_JSON" bash "$LIB_DIR/platform-deploy.sh" --app "$APP")
   if [ "$CMD" != activate ]; then

@@ -37,7 +37,7 @@ setup(){
   export STAGING_DIR="$WORK/run" NO_METADATA="$WORK/no-metadata.json" MODES="$WORK/staged-modes"
   export HEALTH_TIMEOUT=1 HEALTH_INTERVAL=0 STUB_LOG="$WORK/calls.log" STUB_TARS="$WORK/tars"
   export CURL_BAD="" PM2_BAD="" STUB_UID=1000 PRE_START_EXIT=0 PLATFORM_SYNC="$WORK/bin/fake-sync"
-  export SECRETS_EXIT=0
+  export SECRETS_EXIT=0 PM2_UNIT_ACTIVE=0 PM2_UNIT_START=0
   printf 'RELEASES_BUCKET=rel\nBACKUPS_BUCKET=bak\n' > "$PLATFORM_CONF"
   jq -cn '{"vm-app-demo": ({name: "demo", port: 4100, domains: ["demo.example.com"], db: "demo", health_path: "/health", deploy_user: "sa_123"} | tojson)}' \
     > "$PLATFORM_METADATA_FILE"
@@ -57,6 +57,12 @@ case " $CURL_BAD " in *" $target "*) exit 7 ;; esac
 exit 0'
   stub id 'echo "$STUB_UID"'
   stub chgrp 'exit 0'
+  # PM2_UNIT_ACTIVE: exit code of "is-active"; PM2_UNIT_START: of "start".
+  stub systemctl 'case "$1" in
+  is-active) exit "$PM2_UNIT_ACTIVE" ;;
+  start) exit "$PM2_UNIT_START" ;;
+esac
+exit 0'
   # The app user cannot reach the metadata server: the app phase gets no metadata.
   # The modes of what was staged are recorded for the tests.
   stub runuser 'for f in "$STAGING_DIR/demo" "$STAGING_DIR/demo/release.tar.gz" "$STAGING_DIR/demo/app.env"; do
@@ -387,6 +393,37 @@ test_as_root_rollback(){
     || fail "app phase not run with rollback: $(cat "$STUB_LOG")"
   no_gcloud "rollback"
   assert_eq "$(current)" "$ROOT/releases/r1" "current"
+}
+
+test_as_root_leaves_active_pm2_unit(){
+  export STUB_UID=0
+  make_tar r1
+  run_deploy activate "$(url r1)" || fail "activate as root failed: $(cat "$WORK/out.log")"
+  grep -qF "systemctl is-active --quiet pm2-app-demo.service" "$STUB_LOG" || fail "unit state not checked"
+  if grep -q "systemctl start\|pm2 kill" "$STUB_LOG"; then fail "touched an active unit: $(cat "$STUB_LOG")"; fi
+}
+
+test_as_root_moves_pm2_under_systemd(){
+  export STUB_UID=0 PM2_UNIT_ACTIVE=3
+  make_tar r1
+  run_deploy activate "$(url r1)" || fail "activate as root failed: $(cat "$WORK/out.log")"
+  assert_eq "$(grep -n -E '^(pm2 kill|systemctl start|pm2 start)' "$STUB_LOG" | cut -d: -f2 | cut -d' ' -f1-2 | tr '\n' '|')" \
+    "pm2 kill|systemctl start|pm2 start|" "stray daemon stopped, unit started, then the release started"
+  grep -qF "systemctl start pm2-app-demo.service" "$STUB_LOG" || fail "unit not started: $(cat "$STUB_LOG")"
+}
+
+test_as_root_continues_when_unit_fails(){
+  export STUB_UID=0 PM2_UNIT_ACTIVE=3 PM2_UNIT_START=1
+  make_tar r1
+  run_deploy activate "$(url r1)" || fail "activate failed although only the unit failed: $(cat "$WORK/out.log")"
+  out_has "could not start pm2-app-demo.service" "warning"
+}
+
+test_as_root_status_only_warns(){
+  export STUB_UID=0 PM2_UNIT_ACTIVE=3
+  run_deploy status || fail "status as root failed: $(cat "$WORK/out.log")"
+  out_has "pm2-app-demo.service is not active" "warning"
+  if grep -q "systemctl start\|pm2 kill" "$STUB_LOG"; then fail "status changed PM2: $(cat "$STUB_LOG")"; fi
 }
 
 for t in $(declare -F | awk '{print $3}' | grep '^test_'); do
