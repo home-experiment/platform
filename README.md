@@ -145,7 +145,7 @@ Backups are written to `gs://pytsekas-film-picker-backups/<name>/<name>-YYYY-MM-
 
 ### Isolation between apps
 
-- Each app runs as its own Linux user `app-<name>` with its own PM2 daemon, started at boot by `pm2-app-<name>.service`. `sudo -u app-<name> pm2 ...` talks to that daemon.
+- Each app runs as its own Linux user `app-<name>` with its own PM2 daemon, started at boot by `pm2-app-<name>.service`. `sudo -u app-<name> pm2 ...` talks to that daemon. When the daemon is not running, any pm2 command starts a new one inside your SSH session, and systemd kills it and the apps when the session ends. Start it with `sudo systemctl start pm2-app-<name>` instead. `platform-deploy` does this before `activate` and `rollback`. If a daemon is already running outside the unit, the deploy stops it first, and `status` warns about it.
 - `/srv/<name>` belongs to that user and is mode 750. Operators read app files with `sudo -u app-<name>`.
 - No user with uid 1000 or above (apps, deploy accounts, people) can reach the GCP metadata server, which hands out the VM service account's credentials. Only DNS (port 53) stays open. `platform-sync` writes the nftables table to `/etc/nftables.d/platform.nft`, and `nftables.service` loads it at boot. Users of removed apps stay blocked.
 - Only root calls `gcloud`. `platform-deploy` downloads the release and the app's config secret into `/var/lib/platform/staging/<name>` (on disk, not readable by other apps) and hands them to the app user, then removes them.
